@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Paper Reader</title>
+  <link rel="stylesheet" href="/styles.css" />
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/marked/12.0.2/marked.min.js"></script>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.11/katex.min.css" />
+  <script defer src="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.11/katex.min.js"></script>
+  <script defer src="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.11/contrib/auto-render.min.js"></script>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">📄 Paper Reader</div>
+    <label class="upload-btn">
+      Upload
+      <input id="file" type="file" accept="application/pdf" hidden />
+    </label>
+    <div id="title" class="doc-title">No paper loaded</div>
+
+    <label class="toggle" title="Translate pages automatically as you scroll">
+      <input id="autotr" type="checkbox" checked /> Auto-translate
+    </label>
+    <label class="ctl">Lang
+      <select id="lang">
+        <option>Korean</option><option>English</option><option>Japanese</option>
+        <option>Chinese</option><option>Spanish</option><option>French</option><option>German</option>
+      </select>
+    </label>
+    <label class="ctl">Model
+      <select id="model">
+        <option value="sonnet">Sonnet</option>
+        <option value="haiku">Haiku (fast)</option>
+        <option value="opus">Opus (best)</option>
+        <option value="default">Default</option>
+      </select>
+    </label>
+  </header>
+
+  <main class="workspace">
+    <!-- Library -->
+    <aside class="library">
+      <div class="lib-head"><span>Library</span><button id="refresh" title="Rescan folder">⟳</button></div>
+      <div id="libdir" class="lib-dir"></div>
+      <ul id="paperlist" class="paperlist"></ul>
+    </aside>
+
+    <!-- Center: continuous PDF with text layer -->
+    <div id="pdfview" class="pdfview hidden"></div>
+
+    <!-- Right: AI panel -->
+    <aside id="aipanel" class="aipanel hidden">
+      <div class="tabs">
+        <button class="tab active" data-tab="translation">Translation</button>
+        <button class="tab" data-tab="anatomy">Anatomy</button>
+        <button class="tab" data-tab="summary">Summary</button>
+        <button class="tab" data-tab="chat">Chat</button>
+      </div>
+      <div class="tab-body">
+        <div class="tabpane active" id="tab-translation">
+          <div class="tr-toolbar">
+            <button id="tr-smaller" class="btn-ghost" title="Smaller text">A−</button>
+            <button id="tr-bigger" class="btn-ghost" title="Larger text">A+</button>
+            <button id="retranslate" class="btn-ghost" title="Translate again, ignoring the cache">⟳ 다시 번역</button>
+          </div>
+          <div id="trlist" class="trlist"></div>
+        </div>
+        <div class="tabpane" id="tab-anatomy">
+          <div class="tr-toolbar">
+            <button id="re-anatomy" class="btn-ghost" title="Analyze again, ignoring the cache">⟳ 다시 분석</button>
+          </div>
+          <div id="anatomy"><p class="hint" style="padding:6px">Open this tab to analyze the paper's structure (grounded in the source).</p></div>
+        </div>
+        <div class="tabpane" id="tab-summary">
+          <div class="tr-toolbar">
+            <button id="gen-summary" class="btn-ghost">↻ 다시 요약</button>
+          </div>
+          <div id="summary" class="markdown"></div>
+        </div>
+        <div class="tabpane" id="tab-chat">
+          <div id="chatlog" class="chatlog"></div>
+          <div id="chatcite" class="chatcite hidden">
+            <span id="chatcite-text"></span>
+            <button id="chatcite-x" type="button" title="인용 취소">×</button>
+          </div>
+          <form id="chatform" class="chatform">
+            <input id="chatinput" type="text" placeholder="이 논문에 대해 질문하기…" autocomplete="off" />
+            <button type="submit">Send</button>
+          </form>
+        </div>
+      </div>
+    </aside>
+
+    <div id="empty" class="empty">
+      <p>Select a paper from the library, or upload a PDF.</p>
+      <p class="small">Continuous PDF · hover a translation to highlight &amp; scroll to its source · select text to explain.</p>
+    </div>
+
+    <div class="resizer" id="rz1"></div>
+    <div class="resizer" id="rz2"></div>
+  </main>
+
+  <!-- Floating selection action -->
+  <div id="selpop" class="selpop hidden">
+    <button id="btn-ask">💬 채팅에서 질문</button>
+  </div>
+
+  <script src="/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,14 @@
+# Runtime data (uploaded PDFs + cached AI results)
+/data/
+
+# Papers library (your PDFs)
+/papers/
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+.ruff_cache/
+
+# Env
+.env
