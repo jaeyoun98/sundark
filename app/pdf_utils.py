@@ -291,6 +291,37 @@ def _words_with_style(page) -> list[dict]:
     return out
 
 
+_MATH_CHARS = set(
+    "=+−*/^_(){}[]<>|∑∫∏√±≈≠≤≥→←⇒∈∉∇∂∞·×÷αβγδεζηθικλμνξοπρστυφχψωΓΔΘΛΞΠΣΦΨΩ"
+)
+
+
+def _is_math_line(text: str) -> bool:
+    """True for a standalone display-equation line (mostly symbols/numbers, few letters).
+
+    Such lines must be kept whole and NOT sentence-split, otherwise a multi-line equation
+    is translated in fragments and the reconstructed LaTeX comes out unbalanced/broken."""
+    t = text.strip()
+    if len(t) < 2:
+        return False
+    if "=" not in t and not any(c in t for c in "∑∫∏√≈≤≥→∈∇∂"):
+        return False
+    alpha = sum(1 for c in t if c.isascii() and c.isalpha())
+    mathy = sum(1 for c in t if c in _MATH_CHARS or c.isdigit())
+    return mathy >= alpha
+
+
+def _math_ish(text: str) -> bool:
+    """Looser test: mostly symbols/numbers. Used to extend an ongoing equation across lines
+    that have no '=' (e.g. a wrapped '(0, σ² I)')."""
+    t = text.strip()
+    if not t:
+        return False
+    alpha = sum(1 for c in t if c.isascii() and c.isalpha())
+    mathy = sum(1 for c in t if c in _MATH_CHARS or c.isdigit() or c in ",.")
+    return mathy >= alpha
+
+
 def layout(pdf_bytes: bytes, page_index: int) -> dict:
     """Word-level geometry + sentence grouping for one page.
 
@@ -371,6 +402,21 @@ def layout(pdf_bytes: bytes, page_index: int) -> dict:
                 min(ln["x0"]),
             )
             ln["h"] = ln["bottom"] - ln["top"]
+            ln["math"] = _is_math_line(ln["text"])
+
+        # Expand equation lines to adjacent math-ish fragments (LHS superscripts split onto
+        # their own line, wrapped tails like "(0, σ² I)"), so a display equation groups whole.
+        changed = True
+        while changed:
+            changed = False
+            for i, ln in enumerate(lines):
+                if ln["math"] or not _math_ish(ln["text"]):
+                    continue
+                if (i > 0 and lines[i - 1]["math"]) or (
+                    i + 1 < len(lines) and lines[i + 1]["math"]
+                ):
+                    ln["math"] = True
+                    changed = True
 
         body_size = statistics.median(
             [ln["size"] for ln in lines if ln["size"] > 0] or [0]
@@ -439,6 +485,23 @@ def layout(pdf_bytes: bytes, page_index: int) -> dict:
         prev = None
         prev_ended = True
         for ln in lines:
+            in_eq = cur is not None and cur.get("equation")
+            is_eq_line = ln.get("math") or (in_eq and _math_ish(ln["text"]))
+            if is_eq_line and not ln["heading"]:
+                # display-equation line: keep whole; consecutive equation lines merge.
+                if in_eq:
+                    cur["widx"].extend(ln["widx"])
+                else:
+                    if cur:
+                        paras.append(cur)
+                    cur = {
+                        "widx": list(ln["widx"]),
+                        "size": ln["size"],
+                        "heading": False,
+                        "equation": True,
+                    }
+                prev, prev_ended = ln, True
+                continue
             if ln["heading"]:
                 if cur:
                     paras.append(cur)
@@ -447,6 +510,9 @@ def layout(pdf_bytes: bytes, page_index: int) -> dict:
                 )
                 cur, prev, prev_ended = None, None, True
                 continue
+            if cur is not None and cur.get("equation"):
+                paras.append(cur)  # a prose line ends the equation paragraph
+                cur = None
             cont = False
             if cur is not None and prev is not None:
                 if ln["key"][0] == prev["key"][0]:  # same block
@@ -472,9 +538,25 @@ def layout(pdf_bytes: bytes, page_index: int) -> dict:
         if cur:
             paras.append(cur)
 
-        # 3) Split each paragraph into sentences.
+        # 3) Split each paragraph into sentences (equations are kept whole).
         sentences = []
         for pid, para in enumerate(paras):
+            if para.get("equation"):
+                st = " ".join(words[g]["t"] for g in para["widx"]).strip()
+                if st:
+                    heights = [words[g]["y1"] - words[g]["y0"] for g in para["widx"]]
+                    sentences.append(
+                        {
+                            "text": st,
+                            "words": list(para["widx"]),
+                            "para": pid,
+                            "size": round(statistics.median(heights), 1)
+                            if heights
+                            else 0,
+                            "heading": False,
+                        }
+                    )
+                continue
             text = ""
             local: list[tuple[int, int, int]] = []
             for g in para["widx"]:
