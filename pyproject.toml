@@ -1,0 +1,17 @@
+# Ruff 설정
+# Python 린터 및 포매터
+
+[tool.ruff]
+target-version = "py312"
+line-length = 88
+
+[tool.ruff.lint]
+# import 정렬 (isort 호환)
+select = ["I"]
+
+[tool.ruff.format]
+# Black과 호환되는 포맷 설정
+quote-style = "double"
+indent-style = "space"
+skip-magic-trailing-comma = false
+line-ending = "auto"

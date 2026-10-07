@@ -1,0 +1,9 @@
+# Code Reviewers / 코드 리뷰어 설정
+# Auto-assign users when PR is created / PR 생성 시 자동으로 할당될 사용자
+
+# All code / 전체 코드
+* @username
+
+# Specific directories / 특정 디렉토리
+# /src/ @username
+# /docs/ @username
