@@ -1,0 +1,30 @@
+# Ruff Format Check
+# 코드 포맷팅 자동 확인 워크플로우
+
+name: Format Check
+
+on:
+  pull_request:
+    branches:
+      - main
+      - develop
+
+jobs:
+  format:
+    name: Check code formatting
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.12'
+
+      - name: Install Ruff
+        run: pip install ruff
+
+      - name: Check formatting
+        run: ruff format --check . && ruff check I .

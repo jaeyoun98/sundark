@@ -54,4 +54,6 @@ def cache_get(doc_id: str, key: str) -> dict | None:
 def cache_put(doc_id: str, key: str, value: dict) -> None:
     d = CACHE / doc_id
     d.mkdir(parents=True, exist_ok=True)
-    (d / f"{key}.json").write_text(json.dumps(value, ensure_ascii=False), encoding="utf-8")
+    (d / f"{key}.json").write_text(
+        json.dumps(value, ensure_ascii=False), encoding="utf-8"
+    )

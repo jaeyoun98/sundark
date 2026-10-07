@@ -67,7 +67,9 @@ def _title_from_fonts(page) -> str:
     if not lines:
         return ""
     max_size = max(s for s, _, _ in lines)
-    title_lines = [t for (s, y, t) in sorted(lines, key=lambda x: x[1]) if s >= max_size - 0.5]
+    title_lines = [
+        t for (s, y, t) in sorted(lines, key=lambda x: x[1]) if s >= max_size - 0.5
+    ]
     return " ".join(title_lines)[:300]
 
 
@@ -132,19 +134,27 @@ def _split_on_bullets(raw: list[tuple[int, int]], text: str) -> list[tuple[int, 
     return out
 
 
-def _merge_fragments(raw: list[tuple[int, int]], text: str) -> list[tuple[int, int, str]]:
+def _merge_fragments(
+    raw: list[tuple[int, int]], text: str
+) -> list[tuple[int, int, str]]:
     """Merge lone section numbers and trailing paper-abbreviations into the next sentence."""
     out: list[tuple[int, int, str]] = []
     i = 0
     while i < len(raw):
         s, e = raw[i]
         t = text[s:e].strip()
-        while i + 1 < len(raw) and (
-            re.fullmatch(r"\d+(\.\d+)*\.?", t)
-            or _ABBR_TAIL.search(t)
-            or len(t) <= 2
-            # decimal split from spaced glyphs, e.g. "82 ." + "1%" -> keep together
-            or (re.search(r"\d\s*\.$", t) and text[raw[i + 1][0]:raw[i + 1][1]].lstrip()[:1].isdigit())
+        while (
+            i + 1 < len(raw)
+            and (
+                re.fullmatch(r"\d+(\.\d+)*\.?", t)
+                or _ABBR_TAIL.search(t)
+                or len(t) <= 2
+                # decimal split from spaced glyphs, e.g. "82 ." + "1%" -> keep together
+                or (
+                    re.search(r"\d\s*\.$", t)
+                    and text[raw[i + 1][0] : raw[i + 1][1]].lstrip()[:1].isdigit()
+                )
+            )
         ):
             i += 1
             e = raw[i][1]
@@ -160,7 +170,11 @@ def _split_sentences(text: str) -> list[tuple[int, int, str]]:
     raw = None
     if _SEG is not None:
         with contextlib.suppress(Exception):
-            raw = [(sp.start, sp.end) for sp in _SEG.segment(text) if text[sp.start:sp.end].strip()]
+            raw = [
+                (sp.start, sp.end)
+                for sp in _SEG.segment(text)
+                if text[sp.start : sp.end].strip()
+            ]
     if raw is None:
         raw = [
             (m.start(), m.end())
@@ -179,7 +193,9 @@ def _keep_sentence(text: str, word_count: int) -> bool:
         return True
     if re.search(r"[=∑∫∏√±≈≠≤≥→←⇒∈∉∇∂θελσμβαγδπφψωΩΣ]", text):  # keep equations
         return True
-    return bool(re.match(r"^\d+(\.\d+)*\s+[A-Za-z]", text))  # section heading "2.2 Training"
+    return bool(
+        re.match(r"^\d+(\.\d+)*\s+[A-Za-z]", text)
+    )  # section heading "2.2 Training"
 
 
 def _merge_rects(rects: list, pad: float = 6.0) -> list:
@@ -212,7 +228,9 @@ def _figure_regions(page) -> list:
     with contextlib.suppress(Exception):
         pw, ph = page.rect.width, page.rect.height
         draw = [pymupdf.Rect(d["rect"]) for d in page.get_drawings() if d.get("rect")]
-        draw = [r for r in draw if r.width > 10 and r.height > 10 and r.width < pw * 0.98]
+        draw = [
+            r for r in draw if r.width > 10 and r.height > 10 and r.width < pw * 0.98
+        ]
         for c in _merge_rects(draw, pad=8):
             if c.width > 40 and c.height > 40 and c.width * c.height > pw * ph * 0.03:
                 regions.append(c)
@@ -244,7 +262,11 @@ def _words_with_style(page) -> list[dict]:
                     continue
                 size = span.get("size", 0.0)
                 font = span.get("font", "")
-                bold = bool(span.get("flags", 0) & 16) or "bold" in font.lower() or "black" in font.lower()
+                bold = (
+                    bool(span.get("flags", 0) & 16)
+                    or "bold" in font.lower()
+                    or "black" in font.lower()
+                )
                 sx0, sy0, sx1, sy1 = span.get("bbox", (0, 0, 0, 0))
                 cw = (sx1 - sx0) / len(stext) if stext else 0
                 pos = sx0
@@ -252,11 +274,19 @@ def _words_with_style(page) -> list[dict]:
                     wx1 = pos + cw * len(tok)
                     t = tok.strip()
                     if t:
-                        out.append({
-                            "x0": round(pos, 2), "y0": round(sy0, 2),
-                            "x1": round(min(wx1, sx1), 2), "y1": round(sy1, 2),
-                            "t": t, "bold": bold, "size": round(size, 1), "bno": bno, "lno": lno,
-                        })
+                        out.append(
+                            {
+                                "x0": round(pos, 2),
+                                "y0": round(sy0, 2),
+                                "x1": round(min(wx1, sx1), 2),
+                                "y1": round(sy1, 2),
+                                "t": t,
+                                "bold": bold,
+                                "size": round(size, 1),
+                                "bno": bno,
+                                "lno": lno,
+                            }
+                        )
                     pos = wx1
     return out
 
@@ -273,22 +303,38 @@ def layout(pdf_bytes: bytes, page_index: int) -> dict:
     try:
         page = doc[page_index]
         pw, ph = page.rect.width, page.rect.height
-        ml, mr, mt, mb = 44, 20, 38, 32  # margins: arXiv stamp, page numbers, running heads
+        ml, mr, mt, mb = (
+            44,
+            20,
+            38,
+            32,
+        )  # margins: arXiv stamp, page numbers, running heads
         regions = _figure_regions(page)
 
         def _drop(w) -> bool:
             cx, cy = (w["x0"] + w["x1"]) / 2, (w["y0"] + w["y1"]) / 2
-            if w["x1"] <= ml or w["x0"] >= pw - mr or w["y1"] <= mt or w["y0"] >= ph - mb:
+            if (
+                w["x1"] <= ml
+                or w["x0"] >= pw - mr
+                or w["y1"] <= mt
+                or w["y0"] >= ph - mb
+            ):
                 return True
             return any(r.x0 <= cx <= r.x1 and r.y0 <= cy <= r.y1 for r in regions)
 
         raw = [w for w in _words_with_style(page) if not _drop(w)]
         # On page 1, drop everything above the Abstract (title, authors, affiliations).
         if page_index == 0:
-            cut = next((w["y0"] for w in raw if w["t"].lower().startswith("abstract")), ph * 0.22)
+            cut = next(
+                (w["y0"] for w in raw if w["t"].lower().startswith("abstract")),
+                ph * 0.22,
+            )
             raw = [w for w in raw if w["y1"] > cut]
 
-        words = [{"x0": w["x0"], "y0": w["y0"], "x1": w["x1"], "y1": w["y1"], "t": w["t"]} for w in raw]
+        words = [
+            {"x0": w["x0"], "y0": w["y0"], "x1": w["x1"], "y1": w["y1"], "t": w["t"]}
+            for w in raw
+        ]
 
         # 1) Group words into lines (per-line font size, bold ratio, and geometry).
         lines = []
@@ -298,7 +344,15 @@ def layout(pdf_bytes: bytes, page_index: int) -> dict:
             if cur_line is None or cur_line["key"] != key:
                 if cur_line:
                     lines.append(cur_line)
-                cur_line = {"key": key, "widx": [], "sizes": [], "bolds": [], "y0": [], "y1": [], "x0": []}
+                cur_line = {
+                    "key": key,
+                    "widx": [],
+                    "sizes": [],
+                    "bolds": [],
+                    "y0": [],
+                    "y1": [],
+                    "x0": [],
+                }
             cur_line["widx"].append(gi)
             cur_line["sizes"].append(w["size"])
             cur_line["bolds"].append(w["bold"])
@@ -311,20 +365,30 @@ def layout(pdf_bytes: bytes, page_index: int) -> dict:
             ln["text"] = " ".join(words[g]["t"] for g in ln["widx"])
             ln["size"] = statistics.median(ln["sizes"]) if ln["sizes"] else 0
             ln["bold"] = sum(ln["bolds"]) / len(ln["bolds"]) if ln["bolds"] else 0
-            ln["top"], ln["bottom"], ln["left"] = min(ln["y0"]), max(ln["y1"]), min(ln["x0"])
+            ln["top"], ln["bottom"], ln["left"] = (
+                min(ln["y0"]),
+                max(ln["y1"]),
+                min(ln["x0"]),
+            )
             ln["h"] = ln["bottom"] - ln["top"]
 
-        body_size = statistics.median([ln["size"] for ln in lines if ln["size"] > 0] or [0])
+        body_size = statistics.median(
+            [ln["size"] for ln in lines if ln["size"] > 0] or [0]
+        )
 
         def _heading_kind(ln):
             t, wc = ln["text"].strip(), len(ln["widx"])
-            if wc > 16 or (t and t[0] in _BULLET_CHARS):  # bullet list items are not headings
+            if wc > 16 or (
+                t and t[0] in _BULLET_CHARS
+            ):  # bullet list items are not headings
                 return None
-            if re.match(r"^\d+(\.\d+)*\s+[A-Z]", t):          # numbered section
+            if re.match(r"^\d+(\.\d+)*\s+[A-Z]", t):  # numbered section
                 return "strong"
-            if _LABEL_RE.match(t) and wc <= 6:                # Abstract / Keywords / ...
+            if _LABEL_RE.match(t) and wc <= 6:  # Abstract / Keywords / ...
                 return "strong"
-            if body_size > 0 and ln["size"] >= body_size * 1.15 and wc <= 8:  # larger AND short
+            if (
+                body_size > 0 and ln["size"] >= body_size * 1.15 and wc <= 8
+            ):  # larger AND short
                 return "strong"
             if ln["bold"] >= 0.6 and not re.search(r"[.!?]$", t):  # short bold line
                 return "weak"
@@ -333,13 +397,17 @@ def layout(pdf_bytes: bytes, page_index: int) -> dict:
         kinds = [_heading_kind(ln) for ln in lines]
 
         def _is_body(j) -> bool:
-            return 0 <= j < len(lines) and kinds[j] is None and len(lines[j]["widx"]) >= 8
+            return (
+                0 <= j < len(lines) and kinds[j] is None and len(lines[j]["widx"]) >= 8
+            )
 
         # A short bold line counts as a heading only when a body line follows — this keeps
         # real section titles but rejects scattered figure/diagram labels (which sit among
         # other short labels, not before a paragraph).
         for idx, ln in enumerate(lines):
-            ln["heading"] = kinds[idx] == "strong" or (kinds[idx] == "weak" and _is_body(idx + 1))
+            ln["heading"] = kinds[idx] == "strong" or (
+                kinds[idx] == "weak" and _is_body(idx + 1)
+            )
 
         # Merge a lone section-number heading ("1", "2.2") into the following heading line,
         # so it reads "1 Introduction" instead of two fragments.
@@ -347,8 +415,12 @@ def layout(pdf_bytes: bytes, page_index: int) -> dict:
         k = 0
         while k < len(lines):
             ln = lines[k]
-            if (ln["heading"] and re.fullmatch(r"\d+(\.\d+)*\.?", ln["text"].strip())
-                    and k + 1 < len(lines) and lines[k + 1]["heading"]):
+            if (
+                ln["heading"]
+                and re.fullmatch(r"\d+(\.\d+)*\.?", ln["text"].strip())
+                and k + 1 < len(lines)
+                and lines[k + 1]["heading"]
+            ):
                 lines[k + 1]["widx"] = ln["widx"] + lines[k + 1]["widx"]
                 lines[k + 1]["text"] = ln["text"] + " " + lines[k + 1]["text"]
                 k += 1
@@ -370,7 +442,9 @@ def layout(pdf_bytes: bytes, page_index: int) -> dict:
             if ln["heading"]:
                 if cur:
                     paras.append(cur)
-                paras.append({"widx": list(ln["widx"]), "size": ln["size"], "heading": True})
+                paras.append(
+                    {"widx": list(ln["widx"]), "size": ln["size"], "heading": True}
+                )
                 cur, prev, prev_ended = None, None, True
                 continue
             cont = False
@@ -379,8 +453,13 @@ def layout(pdf_bytes: bytes, page_index: int) -> dict:
                     cont = True
                 elif not prev_ended:
                     gap = ln["top"] - prev["bottom"]
-                    same_col = abs(ln["left"] - prev["left"]) < 40 and -5 <= gap <= prev["h"] * 2.2
-                    col_jump = ln["left"] > prev["left"] + 120 and ln["top"] < prev["top"]
+                    same_col = (
+                        abs(ln["left"] - prev["left"]) < 40
+                        and -5 <= gap <= prev["h"] * 2.2
+                    )
+                    col_jump = (
+                        ln["left"] > prev["left"] + 120 and ln["top"] < prev["top"]
+                    )
                     cont = same_col or col_jump
             if cont:
                 cur["widx"].extend(ln["widx"])
@@ -409,10 +488,15 @@ def layout(pdf_bytes: bytes, page_index: int) -> dict:
                 if idxs and (para["heading"] or _keep_sentence(st, len(idxs))):
                     heights = [words[g]["y1"] - words[g]["y0"] for g in idxs]
                     size = round(statistics.median(heights), 1) if heights else 0
-                    sentences.append({
-                        "text": st, "words": idxs, "para": pid,
-                        "size": size, "heading": para["heading"],
-                    })
+                    sentences.append(
+                        {
+                            "text": st,
+                            "words": idxs,
+                            "para": pid,
+                            "size": size,
+                            "heading": para["heading"],
+                        }
+                    )
 
         return {
             "width": round(page.rect.width, 2),

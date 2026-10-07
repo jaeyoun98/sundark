@@ -29,6 +29,7 @@ def normalize_model(model: str | None) -> str:
     m = (model or DEFAULT_MODEL).lower()
     return m if m in ALLOWED_MODELS else DEFAULT_MODEL
 
+
 # Keep any single call from running away.
 _TIMEOUT_S = 300
 
@@ -81,7 +82,9 @@ async def run(
         raise ClaudeError("Claude call timed out") from e
 
     if proc.returncode != 0:
-        raise ClaudeError(f"claude exited {proc.returncode}: {stderr.decode('utf-8', 'replace')[:500]}")
+        raise ClaudeError(
+            f"claude exited {proc.returncode}: {stderr.decode('utf-8', 'replace')[:500]}"
+        )
 
     try:
         data = json.loads(stdout.decode("utf-8", "replace"))
@@ -97,7 +100,8 @@ async def run(
 _NO_TOOLS = "Respond with text only. Do not use any tools or web search."
 
 _SUMMARY_SYS = (
-    "You are an expert research assistant helping a researcher triage a paper. " + _NO_TOOLS
+    "You are an expert research assistant helping a researcher triage a paper. "
+    + _NO_TOOLS
 )
 _TRANSLATE_SYS = (
     "You translate academic text into the requested target language, keeping technical terms. "
@@ -198,7 +202,9 @@ async def translate_segments(
     return arr
 
 
-async def translate_stream(segments: list[str], target_lang: str, model: str = DEFAULT_MODEL):
+async def translate_stream(
+    segments: list[str], target_lang: str, model: str = DEFAULT_MODEL
+):
     """Async-generate translations one line at a time as the model streams them.
 
     Yields the translation string for each segment in order (progressive display).
@@ -213,15 +219,27 @@ async def translate_stream(segments: list[str], target_lang: str, model: str = D
         f"{_UNTRUSTED_HEADER}<segments>\n{numbered}\n</segments>"
     )
     args = [
-        "claude", "-p", "--output-format", "stream-json", "--include-partial-messages",
-        "--verbose", "--allowed-tools", "", "--append-system-prompt", _TRANSLATE_SYS,
+        "claude",
+        "-p",
+        "--output-format",
+        "stream-json",
+        "--include-partial-messages",
+        "--verbose",
+        "--allowed-tools",
+        "",
+        "--append-system-prompt",
+        _TRANSLATE_SYS,
     ]
     if model and model != "default":
         args += ["--model", model]
 
     proc = await asyncio.create_subprocess_exec(
-        *args, stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.DEVNULL, env=_env(), limit=2**20,
+        *args,
+        stdin=asyncio.subprocess.PIPE,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.DEVNULL,
+        env=_env(),
+        limit=2**20,
     )
     proc.stdin.write(prompt.encode("utf-8"))
     await proc.stdin.drain()
@@ -244,7 +262,10 @@ async def translate_stream(segments: list[str], target_lang: str, model: str = D
             if obj.get("type") != "stream_event":
                 continue
             ev = obj.get("event", {})
-            if ev.get("type") == "content_block_delta" and ev.get("delta", {}).get("type") == "text_delta":
+            if (
+                ev.get("type") == "content_block_delta"
+                and ev.get("delta", {}).get("type") == "text_delta"
+            ):
                 buf += ev["delta"]["text"]
                 parts = buf.split("\n")
                 while emitted < len(parts) - 1:  # all but the still-growing last line
@@ -267,7 +288,11 @@ async def translate_stream(segments: list[str], target_lang: str, model: str = D
 
 
 async def chat(
-    question: str, *, paper_text: str | None, resume: str | None, model: str = DEFAULT_MODEL
+    question: str,
+    *,
+    paper_text: str | None,
+    resume: str | None,
+    model: str = DEFAULT_MODEL,
 ) -> dict:
     """Q&A over the paper. On the first turn pass paper_text to prime the session;
     on later turns pass resume=<session_id> and leave paper_text None."""
@@ -277,7 +302,9 @@ async def chat(
     else:
         prompt = (
             "Answer my questions using only the paper below. Ground each claim in the "
-            "paper's wording.\n\n" + _paper(paper_text or "") + f"\n\nQUESTION: {question}"
+            "paper's wording.\n\n"
+            + _paper(paper_text or "")
+            + f"\n\nQUESTION: {question}"
         )
         out = await run(prompt, system=_CHAT_SYS, model=model)
     return out

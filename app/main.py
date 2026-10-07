@@ -214,7 +214,9 @@ class TranslateReq(BaseModel):
     page: int  # 0-indexed
     target_lang: str = "Korean"
     model: str = claude.DEFAULT_MODEL
-    segments: list[str] | None = None  # client-supplied segments (from the PDF text layer)
+    segments: list[str] | None = (
+        None  # client-supplied segments (from the PDF text layer)
+    )
     force: bool = False  # re-translate, ignoring any cached result
 
 
@@ -267,7 +269,9 @@ async def translate_stream(req: TranslateReq):
         raise HTTPException(400, "page out of range")
 
     model = claude.normalize_model(req.model)
-    segs = [s for s in (req.segments or []) if s.strip()] or pdf_utils.segment(pages[req.page].strip())
+    segs = [s for s in (req.segments or []) if s.strip()] or pdf_utils.segment(
+        pages[req.page].strip()
+    )
     sig = hashlib.sha1("\x1f".join(segs).encode("utf-8")).hexdigest()[:10]
     key = f"tr_{req.target_lang}_{model}_{req.page}_{sig}"
 
@@ -276,7 +280,9 @@ async def translate_stream(req: TranslateReq):
             cached = store.cache_get(req.doc_id, key)
             if cached:
                 for k, seg in enumerate(cached["segments"]):
-                    yield json.dumps({"i": k, "tr": seg["tr"]}, ensure_ascii=False) + "\n"
+                    yield (
+                        json.dumps({"i": k, "tr": seg["tr"]}, ensure_ascii=False) + "\n"
+                    )
                 return
         if not segs:
             store.cache_put(req.doc_id, key, {"segments": [], "translation": ""})
@@ -288,8 +294,13 @@ async def translate_stream(req: TranslateReq):
             k = len(collected)
             collected.append(tr)
             yield json.dumps({"i": k, "tr": tr}, ensure_ascii=False) + "\n"
-        pairs = [{"src": segs[k], "tr": collected[k] if k < len(collected) else ""} for k in range(len(segs))]
-        store.cache_put(req.doc_id, key, {"segments": pairs, "translation": "\n\n".join(collected)})
+        pairs = [
+            {"src": segs[k], "tr": collected[k] if k < len(collected) else ""}
+            for k in range(len(segs))
+        ]
+        store.cache_put(
+            req.doc_id, key, {"segments": pairs, "translation": "\n\n".join(collected)}
+        )
 
     return StreamingResponse(gen(), media_type="application/x-ndjson")
 
@@ -322,7 +333,9 @@ async def chat(req: ChatReq):
     model = claude.normalize_model(req.model)
     resume = _chat_sessions.get(req.doc_id)
     paper_text = None if resume else pdf_utils.full_text(doc["pages"])
-    out = await claude.chat(req.question, paper_text=paper_text, resume=resume, model=model)
+    out = await claude.chat(
+        req.question, paper_text=paper_text, resume=resume, model=model
+    )
     if out.get("session_id"):
         _chat_sessions[req.doc_id] = out["session_id"]
     return {"answer": out["text"]}
