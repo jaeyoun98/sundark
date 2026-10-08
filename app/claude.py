@@ -17,12 +17,15 @@ import json
 import os
 import re
 
-# Default model alias. "sonnet" gives proper inline-math LaTeX and better translation
-# quality; switch to "haiku" (faster) or "opus" (best) from the UI.
-DEFAULT_MODEL = "sonnet"
+# Default model. Haiku 5.5 now renders inline-math LaTeX as well as Sonnet (verified) while
+# being cheaper and faster, so it is the default; switch to "sonnet"/"opus" from the UI for
+# the heaviest reasoning. NOTE: the bare "haiku" alias still resolves to Haiku 4.5 in the CLI,
+# so the explicit id is used here to get 5.5.
+DEFAULT_MODEL = "claude-haiku-5-5"
 
-# Model aliases the UI may request. "default" means: let the CLI pick (omit --model).
-ALLOWED_MODELS = {"default", "opus", "sonnet", "haiku"}
+# Models the UI may request. "default" means: let the CLI pick (omit --model). The bare
+# aliases map to their current CLI default (haiku -> 4.5); the explicit id picks 5.5.
+ALLOWED_MODELS = {"default", "opus", "sonnet", "haiku", "claude-haiku-5-5"}
 
 
 def normalize_model(model: str | None) -> str:
@@ -32,6 +35,13 @@ def normalize_model(model: str | None) -> str:
 
 # Keep any single call from running away.
 _TIMEOUT_S = 300
+
+# Concurrent `claude` calls work (each is its own process) as long as the event loop is not
+# blocked — heavy layout now runs in a worker thread, so it no longer starves subprocess
+# stdin. We still cap how many run at once so a page full of equations (or a big pre-warm)
+# can't spawn dozens of processes and hit rate limits. Summary/anatomy/translation/vision
+# run in parallel up to this limit.
+_cli_sem = asyncio.Semaphore(8)
 
 
 class ClaudeError(RuntimeError):
@@ -66,20 +76,21 @@ async def run(
     if resume:
         args += ["--resume", resume]
 
-    proc = await asyncio.create_subprocess_exec(
-        *args,
-        stdin=asyncio.subprocess.PIPE,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-        env=_env(),
-    )
-    try:
-        stdout, stderr = await asyncio.wait_for(
-            proc.communicate(input=prompt.encode("utf-8")), timeout=_TIMEOUT_S
+    async with _cli_sem:  # bounded concurrency (see _cli_sem)
+        proc = await asyncio.create_subprocess_exec(
+            *args,
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            env=_env(),
         )
-    except asyncio.TimeoutError as e:
-        proc.kill()
-        raise ClaudeError("Claude call timed out") from e
+        try:
+            stdout, stderr = await asyncio.wait_for(
+                proc.communicate(input=prompt.encode("utf-8")), timeout=_TIMEOUT_S
+            )
+        except asyncio.TimeoutError as e:
+            proc.kill()
+            raise ClaudeError("Claude call timed out") from e
 
     if proc.returncode != 0:
         raise ClaudeError(
@@ -95,6 +106,64 @@ async def run(
         raise ClaudeError(f"claude reported an error: {data.get('subtype')}")
 
     return {"text": data.get("result", ""), "session_id": data.get("session_id", "")}
+
+
+_MATH_SYS = (
+    "You transcribe the single mathematical expression shown in an image into LaTeX. Output "
+    "ONLY the LaTeX body: no surrounding $ or \\[ \\], no code fences, no prose. Preserve "
+    "subscripts, superscripts, fractions, roots, sums, integrals and Greek letters exactly."
+)
+
+
+async def equation_latex(image_path: str, model: str = DEFAULT_MODEL) -> str:
+    """Transcribe the display equation in an image to LaTeX via a vision call. Compiled PDFs
+    scramble 2D math in the text layer; reading the rendered crop recovers correct LaTeX. The
+    image is a page region WE rendered (trusted); the Read tool is scoped to its directory."""
+    import os.path
+
+    directory = os.path.dirname(os.path.abspath(image_path))
+    args = [
+        "claude",
+        "-p",
+        "--output-format",
+        "json",
+        "--allowed-tools",
+        "Read",
+        "--add-dir",
+        directory,
+        "--append-system-prompt",
+        _MATH_SYS,
+    ]
+    if model and model != "default":
+        args += ["--model", model]
+    prompt = f"Read the image at {image_path} and transcribe its equation as LaTeX."
+
+    async with _cli_sem:  # bounded concurrency (see _cli_sem)
+        proc = await asyncio.create_subprocess_exec(
+            *args,
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            env=_env(),
+        )
+        try:
+            stdout, stderr = await asyncio.wait_for(
+                proc.communicate(input=prompt.encode("utf-8")), timeout=_TIMEOUT_S
+            )
+        except asyncio.TimeoutError as e:
+            proc.kill()
+            raise ClaudeError("vision call timed out") from e
+    if proc.returncode != 0:
+        raise ClaudeError(
+            f"claude exited {proc.returncode}: "
+            f"{stderr.decode('utf-8', 'replace')[:300]}"
+        )
+    data = json.loads(stdout.decode("utf-8", "replace"))
+    latex = (data.get("result") or "").strip()
+    latex = re.sub(r"^```(?:latex)?\s*|\s*```$", "", latex).strip()
+    if latex.startswith("\\[") and latex.endswith("\\]"):
+        latex = latex[2:-2].strip()
+    return latex.strip("$").strip()
 
 
 _NO_TOOLS = "Respond with text only. Do not use any tools or web search."
@@ -124,6 +193,12 @@ _EXPLAIN_SYS = (
 _ANATOMY_SYS = (
     "You are an expert research-paper analyst. Ground every statement in the paper; "
     "never invent a number, dataset, baseline, ablation, or limitation. " + _NO_TOOLS
+)
+_BRIEF_SYS = (
+    "You build a short translation glossary for an academic paper. From the front matter, "
+    "identify the paper's field in one line, the abbreviations it defines, and its key "
+    "technical terms. Keep it compact — this is reference material for a translator, not a "
+    "summary. " + _NO_TOOLS
 )
 
 # Paper text comes from an untrusted PDF. Frame it explicitly as data so that any
@@ -180,8 +255,40 @@ def _parse_json_array(text: str) -> list[str] | None:
     return arr
 
 
+def _brief_block(brief: str) -> str:
+    """Reference glossary prepended to a translation prompt for cross-page consistency.
+    Framed as reference, not as content to translate."""
+    if not brief.strip():
+        return ""
+    return (
+        "Use the glossary in <brief> to keep terminology and abbreviations consistent with "
+        "the rest of the paper. It is reference only — do not translate or echo it.\n"
+        f"<brief>\n{brief.strip()}\n</brief>\n\n"
+    )
+
+
+async def translate_brief(
+    front_matter: str, target_lang: str, model: str = DEFAULT_MODEL
+) -> str:
+    """A compact per-paper glossary (field, paper-defined abbreviations, key terms with a
+    preferred target-language rendering) that keeps terminology consistent across pages.
+    Runs on a cheap, fast model since it is simple extraction; the caller caches it."""
+    prompt = (
+        f"Read the paper front matter below and produce a concise translation brief for a "
+        f"translator rendering it into {target_lang}. Use this exact plain-text form:\n"
+        f"FIELD: <one line>\n"
+        f"ABBREVIATIONS: <ABBR = expansion; ...> (only those the paper defines; omit the "
+        f"line if none)\n"
+        f"GLOSSARY: <English term -> {target_lang} rendering; ...> (key technical terms, "
+        f"at most 20)\n"
+        f"Keep it short. No commentary, no markdown.\n\n" + _paper(front_matter)
+    )
+    out = await run(prompt, system=_BRIEF_SYS, model=normalize_model(model))
+    return out["text"].strip()
+
+
 async def translate_segments(
-    segments: list[str], target_lang: str, model: str = DEFAULT_MODEL
+    segments: list[str], target_lang: str, model: str = DEFAULT_MODEL, brief: str = ""
 ) -> list[str] | None:
     """Translate a list of segments into target_lang, returning one translation per
     segment in the same order. Returns None if the model's output can't be aligned
@@ -190,7 +297,8 @@ async def translate_segments(
         return []
     numbered = "\n".join(f"{i + 1}. {s}" for i, s in enumerate(segments))
     prompt = (
-        f"Translate each numbered segment below into {target_lang}. "
+        _brief_block(brief)
+        + f"Translate each numbered segment below into {target_lang}. "
         f"Return ONLY a JSON array of exactly {len(segments)} strings — the translations "
         f"in the same order, one per input segment. No numbering inside the strings, no "
         f"commentary, no markdown fences.\n\n" + numbered
@@ -203,17 +311,20 @@ async def translate_segments(
 
 
 async def translate_stream(
-    segments: list[str], target_lang: str, model: str = DEFAULT_MODEL
+    segments: list[str], target_lang: str, model: str = DEFAULT_MODEL, brief: str = ""
 ):
     """Async-generate translations one line at a time as the model streams them.
 
-    Yields the translation string for each segment in order (progressive display).
+    Yields `(index, translation)` per line, where index is the 0-based segment number the
+    model wrote (None if the line carried no number). Mapping by this index — not by arrival
+    order — keeps each translation on its own segment when the model drops or merges a line.
     Uses a single CLI call with streaming output: fast AND incremental."""
     if not segments:
         return
     numbered = "\n".join(f"{i + 1}. {s}" for i, s in enumerate(segments))
     prompt = (
-        f"Translate each numbered segment into {target_lang}. Output ONE line per segment "
+        _brief_block(brief)
+        + f"Translate each numbered segment into {target_lang}. Output ONE line per segment "
         f"in the exact form `<index><TAB><translation>` (a real tab between index and text), "
         f"in the same order, index starting at 1. No JSON, no commentary, no blank lines.\n\n"
         f"{_UNTRUSTED_HEADER}<segments>\n{numbered}\n</segments>"
@@ -233,6 +344,9 @@ async def translate_stream(
     if model and model != "default":
         args += ["--model", model]
 
+    # Held across the whole stream (released in the finally) so no other `claude` call
+    # overlaps this one; the generator is a single CLI invocation.
+    await _cli_sem.acquire()
     proc = await asyncio.create_subprocess_exec(
         *args,
         stdin=asyncio.subprocess.PIPE,
@@ -248,10 +362,20 @@ async def translate_stream(
     buf = ""
     emitted = 0
 
-    def _strip(line: str) -> str:
+    def _parse(line: str) -> tuple[int | None, str]:
+        """Split a '<index><TAB><translation>' line into (0-based index, text). The index is
+        the model's, so the caller can map each translation to the RIGHT segment even if the
+        model drops, merges or reorders a line — mapping by line position silently shifts
+        every later segment when that happens. Returns index None when no leading number is
+        present (the caller then falls back to a running counter)."""
         if "\t" in line:
-            return line.split("\t", 1)[1].strip()
-        return line.lstrip("0123456789.) ").strip()
+            head, text = line.split("\t", 1)
+            head = head.strip()
+            return (int(head) - 1 if head.isdigit() else None), text.strip()
+        m = re.match(r"(\d+)[.)]\s+(.*)$", line)
+        if m:
+            return int(m.group(1)) - 1, m.group(2).strip()
+        return None, line.strip()
 
     try:
         async for raw in proc.stdout:
@@ -272,7 +396,7 @@ async def translate_stream(
                     line = parts[emitted].strip()
                     emitted += 1
                     if line:
-                        yield _strip(line)
+                        yield _parse(line)
     finally:
         # flush the final line
         parts = buf.split("\n")
@@ -280,11 +404,12 @@ async def translate_stream(
             line = parts[emitted].strip()
             emitted += 1
             if line:
-                yield _strip(line)
+                yield _parse(line)
         try:
             await asyncio.wait_for(proc.wait(), timeout=5)
         except (asyncio.TimeoutError, ProcessLookupError):
             proc.kill()
+        _cli_sem.release()
 
 
 async def chat(

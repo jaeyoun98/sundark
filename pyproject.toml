@@ -10,6 +10,19 @@ dependencies = [
     "pymupdf>=1.24",
     "python-multipart>=0.0.9",
     "pysbd>=0.3.4",
+    # Sentence segmentation: spaCy's parser keeps inline refs like "(Fig 1 a)" whole, which
+    # pysbd mis-splits. The en_core_web_sm model (~12 MB) downloads on first use; pysbd is the
+    # fallback if spaCy or the model is unavailable.
+    "spacy>=3.7",
+    # Layout detection (DocLayout-YOLO) is the default region detector. torch/torchvision
+    # resolve to the right wheel per platform (CPU/MPS on macOS/Windows, CUDA when a GPU is
+    # present) and must come from the same index. If the model can't load, pdf_utils falls
+    # back to the heuristic parser, so the app still runs.
+    "doclayout-yolo>=0.0.3",
+    "torch>=2.0",
+    "torchvision>=0.15",
+    "huggingface-hub>=0.23",
+    "pillow>=10.0",
 ]
 
 [tool.ruff]

@@ -117,7 +117,20 @@ button { font: inherit; }
 .tr-toolbar { display: flex; justify-content: flex-end; gap: 8px; padding: 0 0 10px; flex: 0 0 auto; }
 
 /* ---------- Translation (paragraph structure, sentence-level hover) ---------- */
-.trlist { display: flex; flex-direction: column; overflow: auto; }
+.trlist { display: flex; flex-direction: column; overflow: auto; padding-right: 12px; }
+#tr-prep { color: var(--muted); font-size: 13px; padding: 24px 14px; text-align: center; }
+
+#prep-overlay { position: fixed; inset: 0; z-index: 50; display: flex; align-items: center;
+  justify-content: center; background: var(--bg, #0b0b0f); }
+#prep-overlay.hidden { display: none; }
+.prep-box { width: min(420px, 80vw); background: var(--panel); border: 1px solid var(--border);
+  border-radius: 12px; padding: 22px 24px; text-align: center; }
+.prep-title { font-size: 15px; font-weight: 600; margin-bottom: 14px; }
+.prep-bar { height: 8px; background: var(--panel2); border-radius: 999px; overflow: hidden; }
+.prep-bar > #prep-fill { height: 100%; width: 0; background: var(--mark, #6ea8fe);
+  border-radius: 999px; transition: width 0.3s ease; }
+.prep-sub { color: var(--muted); font-size: 12.5px; margin-top: 10px; }
+.trbullet { display: inline-block; text-indent: 0; }
 .trpage { margin: 0; }
 .trpage > .ph { color: var(--muted); font-size: 12px; padding: 4px 8px; font-style: italic; }
 .trpage > .ph:empty { display: none; }

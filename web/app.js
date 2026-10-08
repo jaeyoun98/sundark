@@ -72,6 +72,14 @@ async function openDoc(meta) {
   S.numPages = meta.num_pages;
   setTitle(meta.title + "  ·  " + meta.num_pages + " pages");
 
+  // Cover the whole workspace with the loading screen the instant the paper is opened, before
+  // any await, so the PDF never flashes into view before it is ready. The warm-up below keeps it
+  // up until the first page is translated and a few pages of layout are buffered, then hides it.
+  const ov = $("prep-overlay");
+  $("prep-fill").style.width = "0%";
+  $("prep-text").textContent = "0%";
+  ov.classList.remove("hidden");
+
   $("empty").classList.add("hidden");
   $("pdfview").classList.remove("hidden");
   $("aipanel").classList.remove("hidden");
@@ -89,11 +97,51 @@ async function openDoc(meta) {
   const avail = $("pdfview").clientWidth - 48;
   S.scale = Math.min(2.0, Math.max(0.8, avail / vw.width));
 
-  buildPageShells();
-  buildTrShells();
+  await buildPageShells();  // MUST await: it fills S.pages (one getPage per page); translateAll's
+  buildTrShells();          // producer reads S.pages[i], so it has to be fully built first.
+  // Don't wait for the whole document's layout, or even for the whole first page. Reveal as soon
+  // as (a) the FIRST translated sentence is painted and (b) a few pages of layout are buffered so
+  // scrolling right away stays smooth. Translation (parallel pool) and layout prewarm both keep
+  // running in the background after the reveal.
+  const token = S.docId;
+  const setBar = (f) => {
+    const p = Math.round(100 * Math.max(0, Math.min(1, f)));
+    $("prep-fill").style.width = p + "%";
+    $("prep-text").textContent = p + "%";
+  };
+  setBar(0.1);
+  const autotr = $("autotr").checked;
+  // Reveal once the FIRST translated sentence is painted (not the whole first page). paintFrontier
+  // fires S.onFirstPaint on the first paint; if auto-translate is off, don't gate on it.
+  S.onFirstPaint = null;
+  const firstSentence = autotr
+    ? new Promise((resolve) => { S.onFirstPaint = () => { setBar(0.7); resolve(); }; })
+    : Promise.resolve();
+  if (autotr) translateAll();  // pool starts; page 0 is the frontier → first paint fires onFirstPaint
   genSummary();   // auto-generate the summary in the background
   loadAnatomy();  // auto-generate the Research Anatomy in the background
-  translateAll(); // translate the whole document, top to bottom
+  await Promise.all([firstSentence, waitLayout(Math.min(3, S.numPages))]);
+  if (S.docId !== token) return;
+  setBar(1);
+  await sleep(150);
+  $("prep-overlay").classList.add("hidden");
+}
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+// Matches a segment that is a bullet-list item (same glyphs the server splits on in pdf_utils).
+const BULLET_RE = /^\s*[•◦▪▫●○‣⁃∙]/;
+
+// Resolve once the server's background layout prewarm has at least `n` pages ready, so the first
+// screens scroll smoothly. Bails out if the user opens another doc. Usually near-instant, because
+// translating the first page already took longer than laying out a few pages.
+async function waitLayout(n) {
+  const token = S.docId;
+  for (;;) {
+    if (S.docId !== token) return;
+    const s = await fetch(`/api/status/${token}`).then((r) => r.json()).catch(() => null);
+    if (!s || !s.num_pages || s.finished || s.done >= n) return;
+    await sleep(300);
+  }
 }
 
 function resetObserver() {
@@ -149,6 +197,10 @@ function ensureLayout(i) {
         size: s.size,
         heading: s.heading,
         rects: lineRects(s.words.map((wi) => L.words[wi])),  // in points
+        // A sentence that wraps to the next page carries that page's word boxes too, so the
+        // highlight can span both pages.
+        rectsNext: s.words_next ? lineRects(s.words_next) : null,
+        nextPage: s.cont_next_page ?? null,
       }));
     } catch (err) {
       P.segs = [];
@@ -199,15 +251,47 @@ async function ensureRendered(i) {
   attachPdfHover(i, textEl);
 }
 
-// Translate the whole document top to bottom, one page at a time. Sequential because the
-// subscription `claude` CLI isn't safe to invoke concurrently; the panel fills as it goes.
+// Translate the whole document with PARAGRAPH-level parallelism: the unit of work is a paragraph
+// batch (not a page), and a pool of TR_POOL workers translates batches concurrently — so even one
+// page keeps the pool busy. A producer walks pages in order, lays each out, builds its (empty)
+// DOM, and enqueues its batches; workers drain the queue. Display stays strictly in order via the
+// sentence-level frontier (see paintFrontier). Equation vision is a second pass after.
+const TR_POOL = 8; // concurrent paragraph-batch translations; the CLI semaphore (8) caps CLI calls
 async function translateAll(force) {
   if (!S.docId || !$("autotr").checked) return;
   const token = ++S.trToken;
-  for (let i = 0; i < S.numPages; i++) {
-    if (token !== S.trToken) return;        // a newer doc/retranslate superseded us
-    await ensureLayout(i);
-    await translatePage(i, force);
+  const queue = [];   // pending {page, batch} tasks, in document order
+  let produced = false;
+
+  (async function produce() {
+    for (let i = 0; i < S.numPages; i++) {
+      if (token !== S.trToken) break;
+      await ensureLayout(i);
+      if (token !== S.trToken) break;
+      const batches = preparePage(i);   // builds the page's empty DOM, returns its batches
+      if (!batches.length) paintFrontier();            // empty page: let the frontier pass it
+      for (const b of batches) queue.push({ page: i, batch: b });
+    }
+    produced = true;
+  })();
+
+  async function worker() {
+    for (;;) {
+      if (token !== S.trToken) return;
+      if (queue.length === 0) {
+        if (produced) return;
+        await sleep(40);                                // wait for the producer to enqueue more
+        continue;
+      }
+      const t = queue.shift();
+      await translateBatch(t.page, t.batch, force);
+    }
+  }
+  await Promise.all(Array.from({ length: TR_POOL }, worker));
+
+  for (let i = 0; i < S.numPages; i++) {      // second pass: upgrade display equations
+    if (token !== S.trToken) return;
+    await fetchMath(i);
   }
 }
 
@@ -236,6 +320,7 @@ function lineRects(words) {
 function buildTrShells() {
   const list = $("trlist");
   list.innerHTML = "";
+  S.frontier = 0; // earliest page not yet fully displayed (strict top-to-bottom reveal)
   for (let i = 0; i < S.numPages; i++) {
     const wrap = document.createElement("div");
     wrap.className = "trpage"; wrap.dataset.page = i;
@@ -244,69 +329,158 @@ function buildTrShells() {
   }
 }
 
-async function translatePage(i, force) {
-  const P = S.pages[i];
-  if (!P || P.translated || P.trLoading) return;
-  await ensureLayout(i);
-  if (!P.segs || !P.segs.length) { markTrEmpty(i); P.translated = true; return; }
-  P.trLoading = true;
+// Stream a translation for one batch of segment texts, calling write(pageGlobalIndex, text) for
+// each result. The server numbers results from 0 within the batch, so we add the batch's start.
+async function streamTranslate(page, offset, texts, force, write) {
+  const res = await fetch("/api/translate_stream", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ doc_id: S.docId, page, target_lang: lang(), model: model(), segments: texts, force: !!force }),
+  });
+  if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail || res.statusText);
+  const reader = res.body.getReader();
+  const dec = new TextDecoder();
+  let buf = "";
+  for (;;) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buf += dec.decode(value, { stream: true });
+    let nl;
+    while ((nl = buf.indexOf("\n")) >= 0) {
+      const line = buf.slice(0, nl); buf = buf.slice(nl + 1);
+      if (!line.trim()) continue;
+      let obj; try { obj = JSON.parse(line); } catch { continue; }
+      write(offset + obj.i, obj.tr);
+    }
+  }
+}
 
+// Strict top-to-bottom display. Paragraph batches translate in parallel and land in per-page
+// buffers out of order, but a sentence is PAINTED only when every earlier sentence is painted.
+// S.frontier is the earliest page with an unpainted sentence; P.frontK is the next sentence to
+// paint within it. We paint the contiguous run of already-buffered sentences and stop at the
+// first gap (a sentence still being translated), so nothing ever appears out of order.
+function paintFrontier() {
+  while (S.frontier < S.numPages) {
+    const P = S.pages[S.frontier];
+    if (!P || !P.spanByK) break;                 // this page not prepared yet → wait
+    while (P.frontK < P.spanByK.length && P.trBuf[P.frontK] != null) {
+      if (P.spanByK[P.frontK]) P.spanByK[P.frontK].textContent = P.trBuf[P.frontK];
+      P.frontK += 1;
+      if (S.onFirstPaint) { const cb = S.onFirstPaint; S.onFirstPaint = null; cb(); }
+    }
+    if (P.frontK < P.spanByK.length) break;      // waiting for a sentence still in flight
+    if (P.loadingEl) { P.loadingEl.remove(); P.loadingEl = null; }
+    const wrap = $("trlist").children[S.frontier];
+    if (wrap) renderMath(wrap);
+    P.translated = true;
+    S.frontier += 1;
+  }
+}
+
+// Split a page's segments into paragraph-aligned batches. Each paragraph is its own batch, but a
+// batch keeps absorbing segments until it reaches MIN_BATCH, so a lone heading or a one-line
+// paragraph merges with its neighbour instead of costing a whole CLI call. Returns [{start,texts}].
+function paragraphBatches(segs) {
+  const MIN_BATCH = 3;
+  const batches = [];
+  let cur = null, prevPara = null;
+  segs.forEach((seg, k) => {
+    if (cur && seg.para !== prevPara && cur.texts.length >= MIN_BATCH) {
+      batches.push(cur); cur = null;
+    }
+    if (!cur) cur = { start: k, texts: [] };
+    cur.texts.push(seg.text);
+    prevPara = seg.para;
+  });
+  if (cur) batches.push(cur);
+  return batches;
+}
+
+// Build one page's (empty) translation DOM and return its paragraph batches. Stores P.spanByK
+// (spans by segment index), P.trBuf (translations as they arrive), P.frontK (next sentence to
+// paint), and P.loadingEl. Called once per page by the producer, in document order.
+function preparePage(i) {
+  const P = S.pages[i];
+  if (!P) return [];
   const wrap = $("trlist").children[i];
-  wrap.innerHTML = "";
-  // Build paragraph structure: sentences of the same block flow inline in one <p>.
-  // Paragraph font-size follows the source (headings bigger), scaled to the body size.
+  if (wrap) wrap.innerHTML = "";
+  P.spanByK = []; P.trBuf = []; P.frontK = 0; P.loadingEl = null;
+  if (!P.segs || !P.segs.length) return [];
+  // Paragraph structure: sentences of the same block flow inline in one <p>. Paragraph font-size
+  // follows the source (headings bigger), scaled to the body size.
   const sizes = P.segs.map((s) => s.size).filter((x) => x > 0).sort((a, b) => a - b);
   const bodySize = sizes.length ? sizes[Math.floor(sizes.length / 2)] : 10;
-  const spanByK = [];
   let para = null, curPara = null;
   P.segs.forEach((seg, k) => {
+    const isBullet = BULLET_RE.test(seg.text);
     if (!para || seg.para !== curPara) {
       para = document.createElement("div"); para.className = "trpara";
       const ratio = seg.size > 0 ? seg.size / bodySize : 1;
       para.style.fontSize = Math.max(12, Math.min(26, 13.5 * ratio)) + "px";
       if (seg.heading || ratio >= 1.22) { para.style.fontWeight = "700"; para.classList.add("trhead"); }
       wrap.appendChild(para); curPara = seg.para;
+    } else if (isBullet) {
+      // A bullet item is its own line even inside the same block, so a list reads as a list.
+      para.appendChild(document.createElement("br"));
     }
     const sp = makeTrSeg(i, k, "");
+    if (isBullet) sp.classList.add("trbullet");
     para.appendChild(sp);
     para.appendChild(document.createTextNode(" "));
-    spanByK[k] = sp;
+    P.spanByK[k] = sp;
   });
   const loading = document.createElement("div");
-  loading.className = "ph"; loading.textContent = "번역 중…";
+  loading.className = "ph"; loading.textContent = "Translating…";
   wrap.appendChild(loading);
+  P.loadingEl = loading;
+  return paragraphBatches(P.segs);
+}
 
-  try {
-    const segs = P.segs.map((x) => x.text);
-    const res = await fetch("/api/translate_stream", {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ doc_id: S.docId, page: i, target_lang: lang(), model: model(), segments: segs, force: !!force }),
-    });
-    if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail || res.statusText);
-
-    const reader = res.body.getReader();
-    const dec = new TextDecoder();
-    let buf = "";
-    for (;;) {
-      const { value, done } = await reader.read();
-      if (done) break;
-      buf += dec.decode(value, { stream: true });
-      let nl;
-      while ((nl = buf.indexOf("\n")) >= 0) {
-        const line = buf.slice(0, nl); buf = buf.slice(nl + 1);
-        if (!line.trim()) continue;
-        let obj; try { obj = JSON.parse(line); } catch { continue; }
-        if (spanByK[obj.i]) spanByK[obj.i].textContent = obj.tr;
-      }
+// Translate one paragraph batch and buffer its sentences; paintFrontier() then shows whatever
+// contiguous prefix is now ready. On failure, fall back to the source text for that batch so the
+// frontier is never permanently stalled on a missing sentence.
+async function translateBatch(page, b, force) {
+  const P = S.pages[page];
+  if (!P) return;
+  const end = b.start + b.texts.length;
+  const write = (k, tr) => { P.trBuf[k] = tr; paintFrontier(); };
+  const hasGap = () => { for (let k = b.start; k < end; k++) if (P.trBuf[k] == null) return true; return false; };
+  // Retry a batch that FAILED (e.g. a 502 under heavy parallelism) OR that came back with a gap
+  // (the model occasionally drops a numbered line). Retries force a fresh call so they don't just
+  // replay the cached partial. This is what keeps the odd sentence from staying untranslated.
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      await streamTranslate(page, b.start, b.texts, force || attempt > 0, write);
+    } catch (err) {
+      /* fall through to the gap check / retry */
     }
-    loading.remove();
-    renderMath(wrap); // render any \( \) / \[ \] math via KaTeX
-    P.translated = true;
-  } catch (err) {
-    loading.textContent = "Error: " + err.message;
-  } finally {
-    P.trLoading = false;
+    if (!hasGap()) break;
+    if (attempt < 2) await sleep(400);
   }
+  // Last resort: fill any segment still missing with the source text, so a null gap can never
+  // permanently stall the strict-order frontier (every later sentence would otherwise stay hidden).
+  for (let k = b.start; k < end; k++) {
+    if (P.trBuf[k] == null) P.trBuf[k] = P.segs[k] ? P.segs[k].text : "";
+  }
+  paintFrontier();
+}
+
+// Display equations come out of the PDF text layer scrambled; the server re-reads each from
+// the rendered crop (a vision call) and returns clean LaTeX. Runs as a post-translation pass.
+async function fetchMath(i, wrap) {
+  wrap = wrap || $("trlist").children[i];
+  if (!wrap) return;
+  try {
+    const r = await fetch(`/api/math/${S.docId}/${i}?model=${encodeURIComponent(model())}`);
+    if (!r.ok) return;
+    const d = await r.json();
+    if (!d.equations || !d.equations.length) return;
+    for (const eq of d.equations) {
+      const sp = wrap.querySelector(`.trseg[data-i="${eq.i}"]`);
+      if (sp && eq.latex) sp.textContent = "\\[ " + eq.latex + " \\]";
+    }
+    renderMath(wrap);
+  } catch { /* best-effort: keep the original text if math fetch fails */ }
 }
 
 function makeTrSeg(i, k, tr) {
@@ -322,29 +496,31 @@ function makeTrSeg(i, k, tr) {
   });
   return d;
 }
-function markTrEmpty(i) {
-  const wrap = $("trlist").children[i];
-  if (wrap) wrap.innerHTML = "";
-}
 
 // Unified: highlight one sentence on BOTH sides — a continuous bar over its lines on
 // the PDF, and its translation segment in the panel.
+function drawHlRects(P, rects, on) {
+  if (!P || !P.hllayer) return;
+  P.hllayer.innerHTML = "";
+  if (!on) return;
+  const sc = S.scale;  // rects are in PDF points; scale to pixels
+  for (const r of rects) {
+    const d = document.createElement("div");
+    d.className = "hlrect";
+    d.style.left = (r.left * sc) + "px"; d.style.top = (r.top * sc) + "px";
+    d.style.width = (r.w * sc) + "px"; d.style.height = (r.h * sc) + "px";
+    P.hllayer.appendChild(d);
+  }
+}
+
 function setHover(page, k, on) {
   const P = S.pages[page];
   const seg = P && P.segs && P.segs[k];
   if (!seg) return;
-  if (P.hllayer) {
-    P.hllayer.innerHTML = "";
-    if (on) {
-      const sc = S.scale;  // rects are in PDF points; scale to pixels
-      for (const r of seg.rects) {
-        const d = document.createElement("div");
-        d.className = "hlrect";
-        d.style.left = (r.left * sc) + "px"; d.style.top = (r.top * sc) + "px";
-        d.style.width = (r.w * sc) + "px"; d.style.height = (r.h * sc) + "px";
-        P.hllayer.appendChild(d);
-      }
-    }
+  drawHlRects(P, seg.rects, on);
+  // A sentence that wraps across the page break highlights on the next page too.
+  if (seg.nextPage != null && seg.rectsNext) {
+    drawHlRects(S.pages[seg.nextPage], seg.rectsNext, on);
   }
   const t = $("trlist").querySelector(`.trseg[data-page="${page}"][data-i="${k}"]`);
   if (t) t.classList.toggle("hl", on);
@@ -430,7 +606,10 @@ function renderMath(el) {
 function retranslateAll(force) {
   if (!S.docId) return;
   buildTrShells();
-  S.pages.forEach((P) => { P.translated = false; });
+  S.pages.forEach((P) => {
+    P.translated = false; P.trLoading = false;
+    P.trBuf = null; P.spanByK = null; P.frontK = 0; P.loadingEl = null;
+  });
   translateAll(force);
 }
 
@@ -441,7 +620,9 @@ document.querySelectorAll(".tab").forEach((btn) => {
     document.querySelectorAll(".tabpane").forEach((p) => p.classList.remove("active"));
     btn.classList.add("active");
     $("tab-" + btn.dataset.tab).classList.add("active");
+    // Generate lazily on first view so they don't compete with translation on open.
     if (btn.dataset.tab === "anatomy") loadAnatomy();
+    if (btn.dataset.tab === "summary" && S.docId && !S.summaryLoaded) genSummary();
   });
 });
 
@@ -459,6 +640,8 @@ const EV_SUB = [["dataset_test", "Dataset/Test"], ["metric", "Metric"], ["baseli
 async function loadAnatomy(force) {
   if (!S.docId) return;
   if (!force && S.anatomyLoaded && S.anatomyModel === model()) return;
+  if (S.anatomyLoading) return;  // already in flight (open + a tab click would double-fire)
+  S.anatomyLoading = true;
   const box = $("anatomy");
   box.innerHTML = '<p class="loading" style="padding:6px">Analyzing structure… (grounded in the source, ~10-30s)</p>';
   try {
@@ -466,6 +649,8 @@ async function loadAnatomy(force) {
     renderAnatomy(d); S.anatomyLoaded = true; S.anatomyModel = model();
   } catch (err) {
     box.innerHTML = '<p class="loading" style="padding:6px">Error: ' + err.message + "</p>";
+  } finally {
+    S.anatomyLoading = false;
   }
 }
 $("re-anatomy").addEventListener("click", () => { S.anatomyLoaded = false; loadAnatomy(true); });

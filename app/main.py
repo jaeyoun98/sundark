@@ -6,9 +6,11 @@ calls Claude (via the subscription CLI) for summary, translation, and Q&A.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import os
+import tempfile
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, UploadFile
@@ -16,7 +18,7 @@ from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import claude, pdf_utils, store
+from . import claude, layout_model, pdf_utils, store
 
 ROOT = Path(__file__).resolve().parent.parent
 WEB = ROOT / "web"
@@ -26,6 +28,30 @@ PAPERS_DIR = Path(os.environ.get("PAPERS_DIR", ROOT / "papers")).resolve()
 PAPERS_DIR.mkdir(parents=True, exist_ok=True)
 
 app = FastAPI(title="Paper Reader")
+
+
+@app.on_event("startup")
+async def _warm_layout_model() -> None:
+    """BLOCK startup until the layout model is loaded (it downloads on first run). Uvicorn only
+    reports "Application startup complete" — and only then accepts requests — once this returns,
+    so the homepage is reachable only after the model is ready and the first paper opens without
+    waiting on it. The layout model is REQUIRED: region typing has no heuristic fallback, so if
+    it can't load we fail startup with a clear message instead of serving a broken parser."""
+    print("Loading models (first run downloads them)…", flush=True)
+    ready = await asyncio.to_thread(layout_model.available)
+    if not ready:
+        raise RuntimeError(
+            "Layout model (DocLayout-YOLO) failed to load. It is required — the parser has no "
+            "heuristic fallback. Check the torch/torchvision install (both from the SAME index) "
+            "and that the model can download, then restart. See AGENTS.md."
+        )
+    print("Layout model ready.", flush=True)
+    seg = await asyncio.to_thread(pdf_utils.warm_sentence_model)
+    print(
+        "Sentence model ready." if seg else "Sentence model unavailable — using pysbd.",
+        flush=True,
+    )
+
 
 # In-memory chat sessions: doc_id -> claude session_id (reset on restart; fine for a personal tool).
 _chat_sessions: dict[str, str] = {}
@@ -104,9 +130,104 @@ async def open_paper(req: OpenReq):
     if not path.is_file() or path.suffix.lower() != ".pdf":
         raise HTTPException(404, "Paper not found")
     try:
-        return _ingest(path.read_bytes())
+        return _schedule_prewarm(_ingest(path.read_bytes()))
     except Exception as e:
         raise HTTPException(400, f"Could not read PDF: {e}") from e
+
+
+# Layout (which now runs the YOLO model) is heavy and synchronous. Run it one page at a time
+# so the CPU is not thrashed by parallel inference, and always off the event loop (via a
+# thread) so one page's layout never blocks the server from serving the PDF or other requests.
+_layout_lock = asyncio.Lock()
+
+
+# Bump when layout() changes what it emits, so cached pages from an older parser are bypassed
+# instead of silently reused. The translation cache keys on a segment signature, so it follows
+# automatically; only the layout cache needs this tag. (v2: pure-YOLO region typing. v3:
+# cross-page stitch skips figure/table caption blocks. v4: merge lowercase-starting over-split
+# fragments from spaced inline math. A hybrid-heading v5 was tried and reverted — it hurt
+# precision on the .tex eval — so heading detection stays pure title-box, i.e. v4 output.)
+_LAYOUT_VERSION = 4
+
+
+def _page_layout_cached(doc_id: str, page: int) -> dict:
+    """Layout for one page (cached). Running headers and the end-matter range are detected
+    once per document and cached, then the per-page layout is cached too. Synchronous and
+    heavy — call it through `_layout_async`, never directly in a request handler."""
+    pdf_path = store.pdf_path(doc_id)
+    if not pdf_path.is_file():
+        raise HTTPException(404, "PDF missing")
+    cached = store.cache_get(doc_id, f"layout_v{_LAYOUT_VERSION}_{page}")
+    if cached:
+        return cached
+    pdf_bytes = pdf_path.read_bytes()
+    hc = store.cache_get(doc_id, "headers")
+    if hc is None:
+        hc = {"set": sorted(pdf_utils.running_headers(pdf_bytes))}
+        store.cache_put(doc_id, "headers", hc)
+    sc = store.cache_get(doc_id, "skip")
+    if sc is None:
+        sc = {"range": pdf_utils.end_matter_range(pdf_bytes, headers=set(hc["set"]))}
+        store.cache_put(doc_id, "skip", sc)
+    result = pdf_utils.layout(pdf_bytes, page, headers=set(hc["set"]), skip=sc["range"])
+    store.cache_put(doc_id, f"layout_v{_LAYOUT_VERSION}_{page}", result)
+    return result
+
+
+async def _layout_async(doc_id: str, page: int) -> dict:
+    """Cached fast-path (no lock), else compute one-at-a-time in a worker thread."""
+    cached = store.cache_get(doc_id, f"layout_v{_LAYOUT_VERSION}_{page}")
+    if cached is not None:
+        return cached
+    async with _layout_lock:
+        cached = store.cache_get(
+            doc_id, f"layout_v{_LAYOUT_VERSION}_{page}"
+        )  # another task may have filled it
+        if cached is not None:
+            return cached
+        return await asyncio.to_thread(_page_layout_cached, doc_id, page)
+
+
+# Layout pre-warm progress, so the UI can show a loading bar: doc_id -> pages done; a doc_id
+# in _prewarm_done means the whole sweep finished (even if some pages failed).
+_prewarm_progress: dict[str, int] = {}
+_prewarm_done: set[str] = set()
+
+
+async def _prewarm_layout(doc_id: str, num_pages: int) -> None:
+    """Compute every page's layout from the top, in the background, so scrolling and
+    translation hit the cache instead of waiting on the model. Tracks progress for /api/status."""
+    _prewarm_done.discard(doc_id)
+    _prewarm_progress[doc_id] = 0
+    for p in range(num_pages):
+        try:
+            await _layout_async(doc_id, p)
+        except Exception:  # noqa: BLE001 — best-effort warm-up
+            pass
+        _prewarm_progress[doc_id] = p + 1
+    _prewarm_done.add(doc_id)
+
+
+@app.get("/api/status/{doc_id}")
+async def status(doc_id: str):
+    """Layout pre-warm progress for the loading bar: {done, num_pages, finished}."""
+    doc = _require_doc(doc_id)
+    n = doc["meta"]["num_pages"]
+    return {
+        "done": min(_prewarm_progress.get(doc_id, 0), n),
+        "num_pages": n,
+        "finished": doc_id in _prewarm_done,
+    }
+
+
+_bg_tasks: set = set()  # strong refs so fire-and-forget tasks are not GC'd mid-run
+
+
+def _schedule_prewarm(meta: dict) -> dict:
+    task = asyncio.create_task(_prewarm_layout(meta["doc_id"], meta["num_pages"]))
+    _bg_tasks.add(task)
+    task.add_done_callback(_bg_tasks.discard)
+    return meta
 
 
 @app.get("/api/layout/{doc_id}/{page}")
@@ -115,14 +236,51 @@ async def layout(doc_id: str, page: int):
     doc = _require_doc(doc_id)
     if not (0 <= page < doc["meta"]["num_pages"]):
         raise HTTPException(400, "page out of range")
-    key = f"layout_{page}"
+    return await _layout_async(doc_id, page)
+
+
+@app.get("/api/math/{doc_id}/{page}")
+async def math(doc_id: str, page: int, model: str = claude.DEFAULT_MODEL):
+    """LaTeX for each display equation on a page, read from the rendered crop by a vision call.
+    Compiled PDFs scramble 2D math in the text layer, so we transcribe the image instead.
+    Returns {"equations": [{"i": segment_index, "latex": "..."}]} (cached per page/model)."""
+    doc = _require_doc(doc_id)
+    if not (0 <= page < doc["meta"]["num_pages"]):
+        raise HTTPException(400, "page out of range")
+    m = claude.normalize_model(model)
+    # Keyed by _LAYOUT_VERSION too: the result stores segment indices, which shift when layout()
+    # changes, so an older cache would map equations onto the wrong segments.
+    key = f"math_v{_LAYOUT_VERSION}_{m}_{page}"
     cached = store.cache_get(doc_id, key)
     if cached:
         return cached
-    pdf_path = store.pdf_path(doc_id)
-    if not pdf_path.is_file():
-        raise HTTPException(404, "PDF missing")
-    result = pdf_utils.layout(pdf_path.read_bytes(), page)
+    lay = await _layout_async(doc_id, page)
+    pdf_bytes = store.pdf_path(doc_id).read_bytes()
+    words = lay["words"]
+    out = []
+    for i, seg in enumerate(lay["sentences"]):
+        if not seg.get("equation") or not seg.get("words"):
+            continue
+        idxs = seg["words"]
+        bbox = (
+            min(words[j]["x0"] for j in idxs),
+            min(words[j]["y0"] for j in idxs),
+            max(words[j]["x1"] for j in idxs),
+            max(words[j]["y1"] for j in idxs),
+        )
+        png = pdf_utils.crop_region_png(pdf_bytes, page, bbox)
+        with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
+            f.write(png)
+            tmp = f.name
+        try:
+            latex = await claude.equation_latex(tmp, model=m)
+        except claude.ClaudeError:
+            latex = ""  # best-effort: leave the original text if a crop can't be read
+        finally:
+            os.unlink(tmp)
+        if latex:
+            out.append({"i": i, "latex": latex})
+    result = {"equations": out}
     store.cache_put(doc_id, key, result)
     return result
 
@@ -143,7 +301,7 @@ async def upload(file: UploadFile):
     if not data:
         raise HTTPException(400, "Empty file")
     try:
-        return _ingest(data)
+        return _schedule_prewarm(_ingest(data))
     except Exception as e:
         raise HTTPException(400, f"Could not read PDF: {e}") from e
 
@@ -247,7 +405,10 @@ async def translate(req: TranslateReq):
         return result
 
     source = "\n\n".join(segs)
-    tr = await claude.translate_segments(segs, req.target_lang, model=model)
+    brief = await _get_brief(req.doc_id, doc, req.target_lang)
+    tr = await claude.translate_segments(
+        segs, req.target_lang, model=model, brief=brief
+    )
     if tr is None:
         # Alignment failed — fall back to one whole-page translation.
         whole = await claude.translate(source, req.target_lang, model=model)
@@ -287,19 +448,33 @@ async def translate_stream(req: TranslateReq):
         if not segs:
             store.cache_put(req.doc_id, key, {"segments": [], "translation": ""})
             return
-        collected: list[str] = []
-        async for tr in claude.translate_stream(segs, req.target_lang, model=model):
-            if len(collected) >= len(segs):
-                break
-            k = len(collected)
-            collected.append(tr)
-            yield json.dumps({"i": k, "tr": tr}, ensure_ascii=False) + "\n"
-        pairs = [
-            {"src": segs[k], "tr": collected[k] if k < len(collected) else ""}
-            for k in range(len(segs))
-        ]
+        brief = await _get_brief(req.doc_id, doc, req.target_lang)
+        # Map each translation to the segment index the model wrote, so a dropped or merged
+        # line leaves that one segment blank instead of shifting every later one (which showed
+        # up as translation/highlight mismatch). Fall back to a running counter when a line
+        # has no index.
+        collected: dict[int, str] = {}
+        nxt = 0
+        async for idx, tr in claude.translate_stream(
+            segs, req.target_lang, model=model, brief=brief
+        ):
+            if idx is None:
+                idx = nxt
+            if not (0 <= idx < len(segs)) or idx in collected:
+                continue
+            nxt = idx + 1
+            collected[idx] = tr
+            yield json.dumps({"i": idx, "tr": tr}, ensure_ascii=False) + "\n"
+        pairs = [{"src": segs[k], "tr": collected.get(k, "")} for k in range(len(segs))]
         store.cache_put(
-            req.doc_id, key, {"segments": pairs, "translation": "\n\n".join(collected)}
+            req.doc_id,
+            key,
+            {
+                "segments": pairs,
+                "translation": "\n\n".join(
+                    collected.get(k, "") for k in range(len(segs))
+                ),
+            },
         )
 
     return StreamingResponse(gen(), media_type="application/x-ndjson")
@@ -346,6 +521,35 @@ def _require_doc(doc_id: str) -> dict:
     if doc is None:
         raise HTTPException(404, "Unknown doc_id — upload the PDF again")
     return doc
+
+
+async def _get_brief(doc_id: str, doc: dict, target_lang: str) -> str:
+    """Per-paper translation glossary, generated once (cheap model) from the front matter and
+    cached, then injected into every page's translation for cross-page term consistency.
+    Best-effort: if generation fails, translation proceeds without it."""
+    key = f"brief_{target_lang}"
+    cached = store.cache_get(doc_id, key)
+    if cached is not None:
+        return cached.get("brief", "")
+    try:
+        src = pdf_utils.brief_source(doc["pages"])
+        brief = await claude.translate_brief(src, target_lang)
+    except Exception:  # noqa: BLE001
+        return ""  # non-fatal: a missing glossary just means no extra consistency hint
+    store.cache_put(doc_id, key, {"brief": brief})
+    return brief
+
+
+class BriefReq(BaseModel):
+    doc_id: str
+    target_lang: str = "Korean"
+
+
+@app.post("/api/brief")
+async def brief(req: BriefReq):
+    """Warm (or return) the cached translation glossary for a paper."""
+    doc = _require_doc(req.doc_id)
+    return {"brief": await _get_brief(req.doc_id, doc, req.target_lang)}
 
 
 # --- static UI (mounted last so /api/* wins) ---

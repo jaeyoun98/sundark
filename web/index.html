@@ -31,8 +31,9 @@
     </label>
     <label class="ctl">Model
       <select id="model">
+        <option value="claude-haiku-5-5" selected>Haiku 5.5 (fast, default)</option>
         <option value="sonnet">Sonnet</option>
-        <option value="haiku">Haiku (fast)</option>
+        <option value="haiku">Haiku 4.5</option>
         <option value="opus">Opus (best)</option>
         <option value="default">Default</option>
       </select>
@@ -105,6 +106,14 @@
   <!-- Floating selection action -->
   <div id="selpop" class="selpop hidden">
     <button id="btn-ask">💬 채팅에서 질문</button>
+  </div>
+
+  <div id="prep-overlay" class="hidden">
+    <div class="prep-box">
+      <div class="prep-title">Analyzing paper…</div>
+      <div class="prep-bar"><div id="prep-fill"></div></div>
+      <div id="prep-text" class="prep-sub">0%</div>
+    </div>
   </div>
 
   <script src="/app.js"></script>
