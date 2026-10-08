@@ -284,7 +284,7 @@ async function translateAll(force) {
         continue;
       }
       const t = queue.shift();
-      await translateBatch(t.page, t.batch, force);
+      await translateBatch(t.page, t.batch, force, token);
     }
   }
   await Promise.all(Array.from({ length: TR_POOL }, worker));
@@ -375,6 +375,11 @@ function paintFrontier() {
     P.translated = true;
     S.frontier += 1;
   }
+  // Every page is displayed (or the whole document has no translatable sentences, e.g. a scanned
+  // PDF): release the loading cover even though nothing was painted, so it can never hang open.
+  if (S.frontier >= S.numPages && S.onFirstPaint) {
+    const cb = S.onFirstPaint; S.onFirstPaint = null; cb();
+  }
 }
 
 // Split a page's segments into paragraph-aligned batches. Each paragraph is its own batch, but a
@@ -439,16 +444,20 @@ function preparePage(i) {
 // Translate one paragraph batch and buffer its sentences; paintFrontier() then shows whatever
 // contiguous prefix is now ready. On failure, fall back to the source text for that batch so the
 // frontier is never permanently stalled on a missing sentence.
-async function translateBatch(page, b, force) {
+async function translateBatch(page, b, force, token) {
   const P = S.pages[page];
   if (!P) return;
   const end = b.start + b.texts.length;
-  const write = (k, tr) => { P.trBuf[k] = tr; paintFrontier(); };
-  const hasGap = () => { for (let k = b.start; k < end; k++) if (P.trBuf[k] == null) return true; return false; };
+  // A retranslate (lang/model change) bumps S.trToken and nulls P.trBuf; guard every buffer touch
+  // so a lingering old-run worker can't throw on a null buffer or paint stale text into a new run.
+  const live = () => token === S.trToken && P.trBuf;
+  const write = (k, tr) => { if (!live()) return; P.trBuf[k] = tr; paintFrontier(); };
+  const hasGap = () => { if (!live()) return false; for (let k = b.start; k < end; k++) if (P.trBuf[k] == null) return true; return false; };
   // Retry a batch that FAILED (e.g. a 502 under heavy parallelism) OR that came back with a gap
   // (the model occasionally drops a numbered line). Retries force a fresh call so they don't just
   // replay the cached partial. This is what keeps the odd sentence from staying untranslated.
   for (let attempt = 0; attempt < 3; attempt++) {
+    if (!live()) return;
     try {
       await streamTranslate(page, b.start, b.texts, force || attempt > 0, write);
     } catch (err) {
@@ -459,6 +468,7 @@ async function translateBatch(page, b, force) {
   }
   // Last resort: fill any segment still missing with the source text, so a null gap can never
   // permanently stall the strict-order frontier (every later sentence would otherwise stay hidden).
+  if (!live()) return;
   for (let k = b.start; k < end; k++) {
     if (P.trBuf[k] == null) P.trBuf[k] = P.segs[k] ? P.segs[k].text : "";
   }

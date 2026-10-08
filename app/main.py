@@ -430,8 +430,14 @@ async def translate_stream(req: TranslateReq):
         raise HTTPException(400, "page out of range")
 
     model = claude.normalize_model(req.model)
-    segs = [s for s in (req.segments or []) if s.strip()] or pdf_utils.segment(
-        pages[req.page].strip()
+    # Keep client-supplied segments 1:1 (do NOT drop blank ones): the client numbers results by
+    # position within the batch it sent, so filtering here would shift every later index and
+    # mis-map the translation and its highlight. Only fall back to splitting the page ourselves
+    # when the client sent nothing.
+    segs = (
+        list(req.segments)
+        if req.segments
+        else pdf_utils.segment(pages[req.page].strip())
     )
     sig = hashlib.sha1("\x1f".join(segs).encode("utf-8")).hexdigest()[:10]
     key = f"tr_{req.target_lang}_{model}_{req.page}_{sig}"
