@@ -4,9 +4,9 @@ it to BACKENDS; app/settings.py BACKEND_NAMES and DEFAULT_MODELS need the same n
 
 from __future__ import annotations
 
-from . import claude
+from . import claude, hermes
 
-BACKENDS = {claude.NAME: claude}
+BACKENDS = {claude.NAME: claude, hermes.NAME: hermes}
 
 
 def get(name: str):
