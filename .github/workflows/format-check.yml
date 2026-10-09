@@ -28,3 +28,14 @@ jobs:
 
       - name: Check formatting
         run: ruff format --check . && ruff check I .
+
+      - name: Install project dependencies
+        run: |
+          pip install uv
+          uv sync --frozen
+
+      - name: Unit tests
+        run: uv run python -m unittest discover -s tests -v
+
+      - name: Check browser JavaScript
+        run: node --check web/app.js
