@@ -123,7 +123,11 @@ class ProcessTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(out.strip(), b"PAPER")
 
     async def test_nonzero_exit_hides_stderr_but_classifies(self):
-        args = [sys.executable, "-c", "import sys; sys.stderr.write('429 secret'); sys.exit(3)"]
+        args = [
+            sys.executable,
+            "-c",
+            "import sys; sys.stderr.write('429 secret'); sys.exit(3)",
+        ]
         with self.assertRaises(RateLimitError) as ctx:
             await run_process(args, b"", {})
         self.assertNotIn("secret", str(ctx.exception))
@@ -139,7 +143,11 @@ class ProcessTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(lines, ["a", "b"])
 
     async def test_closing_stream_early_reaps_child(self):
-        args = [sys.executable, "-c", "import time\nfor i in range(100):\n print(i, flush=True); time.sleep(0.05)"]
+        args = [
+            sys.executable,
+            "-c",
+            "import time\nfor i in range(100):\n print(i, flush=True); time.sleep(0.05)",
+        ]
         gen = stream_process(args, b"", {})
         await gen.__anext__()
         await gen.aclose()  # must not hang or leak the child
@@ -253,10 +261,14 @@ async def _spawn(args, env, limit=2**22):
             limit=limit,
         )
     except OSError as exc:
-        raise AIError(f"Cannot start {args[0]}; install the selected AI Backend") from exc
+        raise AIError(
+            f"Cannot start {args[0]}; install the selected AI Backend"
+        ) from exc
 
 
-async def run_process(args: list[str], stdin: bytes, env: dict, timeout: float = 300) -> bytes:
+async def run_process(
+    args: list[str], stdin: bytes, env: dict, timeout: float = 300
+) -> bytes:
     proc = await _spawn(args, env)
     try:
         stdout, stderr = await asyncio.wait_for(proc.communicate(input=stdin), timeout)
@@ -268,13 +280,16 @@ async def run_process(args: list[str], stdin: bytes, env: dict, timeout: float =
         raise
     if proc.returncode != 0:
         raise from_text(
-            stderr.decode("utf-8", "replace") + stdout.decode("utf-8", "replace")[-2000:],
+            stderr.decode("utf-8", "replace")
+            + stdout.decode("utf-8", "replace")[-2000:],
             f"AI Backend exited {proc.returncode}; check its login and model",
         )
     return stdout
 
 
-async def stream_process(args: list[str], stdin: bytes, env: dict, timeout: float = 300):
+async def stream_process(
+    args: list[str], stdin: bytes, env: dict, timeout: float = 300
+):
     proc = await _spawn(args, env)
     loop = asyncio.get_running_loop()
     deadline = loop.time() + timeout
@@ -288,7 +303,9 @@ async def stream_process(args: list[str], stdin: bytes, env: dict, timeout: floa
     errors = asyncio.create_task(proc.stderr.read())
     try:
         while True:
-            raw = await asyncio.wait_for(proc.stdout.readline(), max(0, deadline - loop.time()))
+            raw = await asyncio.wait_for(
+                proc.stdout.readline(), max(0, deadline - loop.time())
+            )
             if not raw:
                 break
             yield raw.decode("utf-8", "replace")
@@ -374,7 +391,9 @@ class SettingsTests(unittest.TestCase):
     def setUp(self):
         self.dir = tempfile.TemporaryDirectory()
         self.path = Path(self.dir.name) / "settings.json"
-        self.env = patch.dict(os.environ, {"PAPER_READER_SETTINGS": str(self.path)}, clear=False)
+        self.env = patch.dict(
+            os.environ, {"PAPER_READER_SETTINGS": str(self.path)}, clear=False
+        )
         self.env.start()
         os.environ.pop("PAPER_READER_BACKEND", None)
 
@@ -387,7 +406,9 @@ class SettingsTests(unittest.TestCase):
         self.assertIsNone(s["backend"])
         self.assertEqual(settings.model_for(s, "hermes", "translate"), "gpt-6-luna")
         self.assertEqual(settings.model_for(s, "hermes", "chat"), "gpt-6.1-sol")
-        self.assertEqual(settings.model_for(s, "claude", "translate"), "claude-haiku-5-5")
+        self.assertEqual(
+            settings.model_for(s, "claude", "translate"), "claude-haiku-5-5"
+        )
         self.assertEqual(settings.model_for(s, "claude", "summary"), "sonnet")
         self.assertEqual(settings.concurrency_for(s, "claude"), 8)
 
@@ -404,8 +425,13 @@ class SettingsTests(unittest.TestCase):
         self.path.write_text("{not json", encoding="utf-8")
         self.assertIsNone(settings.load()["backend"])
         self.path.write_text(
-            json.dumps({"backend": "openai", "models": {"hermes": {"bogus": "x", "chat": 5}},
-                        "concurrency": {"hermes": 999}}),
+            json.dumps(
+                {
+                    "backend": "openai",
+                    "models": {"hermes": {"bogus": "x", "chat": 5}},
+                    "concurrency": {"hermes": 999},
+                }
+            ),
             encoding="utf-8",
         )
         s = settings.load()
@@ -464,7 +490,9 @@ _MODEL_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:/@-]{0,119}")
 
 
 def settings_path() -> Path:
-    return Path(os.environ.get("PAPER_READER_SETTINGS", str(DATA / "settings.json"))).expanduser()
+    return Path(
+        os.environ.get("PAPER_READER_SETTINGS", str(DATA / "settings.json"))
+    ).expanduser()
 
 
 def _read() -> dict:
@@ -483,17 +511,22 @@ def load() -> dict:
         backend = override
     models, concurrency = {}, {}
     raw_models = raw.get("models") if isinstance(raw.get("models"), dict) else {}
-    raw_conc = raw.get("concurrency") if isinstance(raw.get("concurrency"), dict) else {}
+    raw_conc = (
+        raw.get("concurrency") if isinstance(raw.get("concurrency"), dict) else {}
+    )
     for name in BACKEND_NAMES:
         saved = raw_models.get(name) if isinstance(raw_models.get(name), dict) else {}
         models[name] = {
-            t: saved[t] if isinstance(saved.get(t), str) and _MODEL_ID.fullmatch(saved[t])
+            t: saved[t]
+            if isinstance(saved.get(t), str) and _MODEL_ID.fullmatch(saved[t])
             else DEFAULT_MODELS[name][t]
             for t in TASKS
         }
         n = raw_conc.get(name)
         concurrency[name] = (
-            max(1, min(MAX_CONCURRENCY, n)) if isinstance(n, int) else DEFAULT_CONCURRENCY
+            max(1, min(MAX_CONCURRENCY, n))
+            if isinstance(n, int)
+            else DEFAULT_CONCURRENCY
         )
     return {"backend": backend, "models": models, "concurrency": concurrency}
 
@@ -510,7 +543,11 @@ def save(backend: str, models: dict[str, str], concurrency: int) -> None:
     if backend not in BACKEND_NAMES:
         raise ValueError(f"Unknown AI Backend: {backend}")
     for task, model in models.items():
-        if task not in TASKS or not isinstance(model, str) or not _MODEL_ID.fullmatch(model):
+        if (
+            task not in TASKS
+            or not isinstance(model, str)
+            or not _MODEL_ID.fullmatch(model)
+        ):
             raise ValueError(f"Invalid model for {task}: {model!r}")
     if not isinstance(concurrency, int) or not 1 <= concurrency <= MAX_CONCURRENCY:
         raise ValueError(f"Concurrency must be 1-{MAX_CONCURRENCY}")
@@ -582,7 +619,10 @@ def result_line(text="ok", is_error=False):
 
 
 def delta_line(text):
-    event = {"type": "content_block_delta", "delta": {"type": "text_delta", "text": text}}
+    event = {
+        "type": "content_block_delta",
+        "delta": {"type": "text_delta", "text": text},
+    }
     return json.dumps({"type": "stream_event", "event": event}) + "\n"
 
 
@@ -594,10 +634,13 @@ class ClaudeBackendTests(unittest.IsolatedAsyncioTestCase):
             seen.update(args=args, stdin=stdin, env=env)
             return result_line("E=mc^2").encode()
 
-        with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "sk-test"}), patch(
-            "app.backends.claude.run_process", new=fake
+        with (
+            patch.dict(os.environ, {"ANTHROPIC_API_KEY": "sk-test"}),
+            patch("app.backends.claude.run_process", new=fake),
         ):
-            text = await claude.run("read it", model="sonnet", system="sys", images=[b"PNG"])
+            text = await claude.run(
+                "read it", model="sonnet", system="sys", images=[b"PNG"]
+            )
         self.assertEqual(text, "E=mc^2")
         args = seen["args"]
         self.assertEqual(args[args.index("--tools") + 1], "")
@@ -626,7 +669,9 @@ class ClaudeBackendTests(unittest.IsolatedAsyncioTestCase):
             yield delta_line("1\t가\n")
 
         with patch("app.backends.claude.stream_process", new=ok):
-            self.assertEqual([d async for d in claude.stream("p", model="sonnet")], ["1\t가\n"])
+            self.assertEqual(
+                [d async for d in claude.stream("p", model="sonnet")], ["1\t가\n"]
+            )
         with patch("app.backends.claude.stream_process", new=cut):
             with self.assertRaises(AIError):
                 [d async for d in claude.stream("p", model="sonnet")]
@@ -678,18 +723,25 @@ def _env() -> dict:
     env = dict(os.environ)
     env.pop("ANTHROPIC_API_KEY", None)  # subscription access only
     env.pop("CLAUDECODE", None)
-    env["MAX_THINKING_TOKENS"] = "0"  # roughly halves latency; no Task needs extended thinking
+    env["MAX_THINKING_TOKENS"] = (
+        "0"  # roughly halves latency; no Task needs extended thinking
+    )
     return env
 
 
 def _args(model: str, system: str | None, *, stream: bool) -> list[str]:
     args = [
-        "claude", "-p",
-        "--input-format", "stream-json",
-        "--output-format", "stream-json",
+        "claude",
+        "-p",
+        "--input-format",
+        "stream-json",
+        "--output-format",
+        "stream-json",
         "--verbose",
-        "--tools", "",
-        "--allowed-tools", "",
+        "--tools",
+        "",
+        "--allowed-tools",
+        "",
     ]
     if stream:
         args.append("--include-partial-messages")
@@ -704,8 +756,11 @@ def _message(prompt: str, images) -> bytes:
     parts = [
         {
             "type": "image",
-            "source": {"type": "base64", "media_type": "image/png",
-                       "data": base64.b64encode(png).decode()},
+            "source": {
+                "type": "base64",
+                "media_type": "image/png",
+                "data": base64.b64encode(png).decode(),
+            },
         }
         for png in images
     ]
@@ -717,12 +772,17 @@ def _message(prompt: str, images) -> bytes:
 def _result(obj: dict) -> str:
     text = obj.get("result") or ""
     if obj.get("is_error"):
-        raise from_text(str(text) + str(obj.get("subtype", "")), "Claude Code could not complete the request")
+        raise from_text(
+            str(text) + str(obj.get("subtype", "")),
+            "Claude Code could not complete the request",
+        )
     return text
 
 
 async def run(prompt, *, model, system=None, images=()):
-    out = await run_process(_args(model, system, stream=False), _message(prompt, images), _env())
+    out = await run_process(
+        _args(model, system, stream=False), _message(prompt, images), _env()
+    )
     final = None
     for line in out.decode("utf-8", "replace").splitlines():
         try:
@@ -738,7 +798,9 @@ async def run(prompt, *, model, system=None, images=()):
 
 async def stream(prompt, *, model, system=None):
     finished, emitted, final = False, False, ""
-    async for raw in stream_process(_args(model, system, stream=True), _message(prompt, ()), _env()):
+    async for raw in stream_process(
+        _args(model, system, stream=True), _message(prompt, ()), _env()
+    ):
         try:
             obj = json.loads(raw)
         except ValueError:
@@ -748,8 +810,11 @@ async def stream(prompt, *, model, system=None):
             continue
         event = obj.get("event") or {}
         delta = event.get("delta") or {}
-        if obj.get("type") == "stream_event" and event.get("type") == "content_block_delta" \
-                and delta.get("type") == "text_delta":
+        if (
+            obj.get("type") == "stream_event"
+            and event.get("type") == "content_block_delta"
+            and delta.get("type") == "text_delta"
+        ):
             emitted = True
             yield delta.get("text", "")
     if not finished:
@@ -820,8 +885,16 @@ from app.backends import hermes_runner
 
 def fake_sdk(calls, *, tools=None, failure=None):
     class Agent:
-        def __init__(self, enabled_toolsets, skip_context_files, skip_memory,
-                     load_soul_identity, session_db, stream_delta_callback, **kw):
+        def __init__(
+            self,
+            enabled_toolsets,
+            skip_context_files,
+            skip_memory,
+            load_soul_identity,
+            session_db,
+            stream_delta_callback,
+            **kw,
+        ):
             calls["toolsets"] = enabled_toolsets
             calls["model"] = kw.get("model")
             self.tools = tools or []
@@ -838,22 +911,31 @@ def fake_sdk(calls, *, tools=None, failure=None):
             calls["closed"] = True
 
     config = types.ModuleType("hermes_cli.config")
-    config.load_config = lambda: {"model": {"default": "saved", "provider": "openai-codex"}}
+    config.load_config = lambda: {
+        "model": {"default": "saved", "provider": "openai-codex"}
+    }
     runtime = types.ModuleType("hermes_cli.runtime_provider")
     runtime.resolve_runtime_provider = lambda **kw: {"provider": "openai-codex"}
     agent = types.ModuleType("run_agent")
     agent.AIAgent = Agent
-    return {"hermes_cli": types.ModuleType("hermes_cli"), "hermes_cli.config": config,
-            "hermes_cli.runtime_provider": runtime, "run_agent": agent}
+    return {
+        "hermes_cli": types.ModuleType("hermes_cli"),
+        "hermes_cli.config": config,
+        "hermes_cli.runtime_provider": runtime,
+        "run_agent": agent,
+    }
 
 
 def invoke(request, **kw):
     calls, out = {}, io.StringIO()
-    with patch.dict(sys.modules, fake_sdk(calls, **kw)), \
-         patch.dict(os.environ, {"HERMES_INFERENCE_MODEL": "stale"}, clear=True), \
-         patch.object(sys, "argv", ["runner"]), \
-         patch.object(sys, "stdin", io.StringIO(json.dumps(request))), \
-         patch.object(sys, "stdout", out), patch.object(sys, "stderr", io.StringIO()):
+    with (
+        patch.dict(sys.modules, fake_sdk(calls, **kw)),
+        patch.dict(os.environ, {"HERMES_INFERENCE_MODEL": "stale"}, clear=True),
+        patch.object(sys, "argv", ["runner"]),
+        patch.object(sys, "stdin", io.StringIO(json.dumps(request))),
+        patch.object(sys, "stdout", out),
+        patch.object(sys, "stderr", io.StringIO()),
+    ):
         status = hermes_runner.main()
     return status, calls, [json.loads(line) for line in out.getvalue().splitlines()]
 
@@ -874,22 +956,30 @@ class RunnerTests(unittest.TestCase):
         self.assertEqual(parts[1]["image_url"]["url"], "data:image/png;base64," + png)
 
     def test_unexpected_tool_fails_closed(self):
-        status, calls, events = invoke({"prompt": "p", "model": "m"}, tools=[{"name": "x"}])
+        status, calls, events = invoke(
+            {"prompt": "p", "model": "m"}, tools=[{"name": "x"}]
+        )
         self.assertEqual(status, 1)
         self.assertNotIn("message", calls)
         self.assertEqual(events[-1]["type"], "error")
 
     def test_failure_kind_is_classified_without_raw_text(self):
-        _, _, events = invoke({"prompt": "p", "model": "gpt-6.1-luna"},
-                              failure="The 'gpt-6.1-luna' model is not supported when using Codex")
+        _, _, events = invoke(
+            {"prompt": "p", "model": "gpt-6.1-luna"},
+            failure="The 'gpt-6.1-luna' model is not supported when using Codex",
+        )
         self.assertEqual(events[-1], {"type": "error", "kind": "model_unavailable"})
-        _, _, events = invoke({"prompt": "p", "model": "m"}, failure="HTTP 429 rate limit")
+        _, _, events = invoke(
+            {"prompt": "p", "model": "m"}, failure="HTTP 429 rate limit"
+        )
         self.assertEqual(events[-1], {"type": "error", "kind": "rate_limit"})
 
     def test_saved_config_beats_stale_env(self):
         calls = {}
-        with patch.dict(sys.modules, fake_sdk(calls)), \
-             patch.dict(os.environ, {"HERMES_INFERENCE_MODEL": "stale"}, clear=True):
+        with (
+            patch.dict(sys.modules, fake_sdk(calls)),
+            patch.dict(os.environ, {"HERMES_INFERENCE_MODEL": "stale"}, clear=True),
+        ):
             info = hermes_runner._config()
         self.assertEqual(info, {"model": "saved", "provider": "openai-codex"})
 ```
@@ -910,6 +1000,7 @@ def lines(*events):
         fake.stdin = json.loads(stdin)
         for e in events:
             yield json.dumps(e) + "\n"
+
     return fake
 
 
@@ -927,20 +1018,37 @@ class HermesBackendTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(fake.stdin["images"], ["UE5H"])
 
     async def test_error_kinds_map_to_error_classes(self):
-        for kind, cls in (("rate_limit", RateLimitError), ("model_unavailable", ModelUnavailableError),
-                          ("other", AIError)):
-            with patch("app.backends.hermes.stream_process", new=lines({"type": "error", "kind": kind})):
+        for kind, cls in (
+            ("rate_limit", RateLimitError),
+            ("model_unavailable", ModelUnavailableError),
+            ("other", AIError),
+        ):
+            with patch(
+                "app.backends.hermes.stream_process",
+                new=lines({"type": "error", "kind": kind}),
+            ):
                 with self.assertRaises(cls):
                     await hermes.run("p", model="m")
 
     async def test_missing_result_is_error(self):
-        with patch("app.backends.hermes.stream_process", new=lines({"type": "delta", "text": "x"})):
+        with patch(
+            "app.backends.hermes.stream_process",
+            new=lines({"type": "delta", "text": "x"}),
+        ):
             with self.assertRaises(AIError):
                 await hermes.run("p", model="m")
 
     def test_env_drops_gateway_identity(self):
-        with patch.dict("os.environ", {"HERMES_SESSION_ID": "s", "HERMES_GATEWAY_X": "g",
-                                       "PYTHONPATH": "/x", "HOME": "/h"}, clear=True):
+        with patch.dict(
+            "os.environ",
+            {
+                "HERMES_SESSION_ID": "s",
+                "HERMES_GATEWAY_X": "g",
+                "PYTHONPATH": "/x",
+                "HOME": "/h",
+            },
+            clear=True,
+        ):
             env = hermes._env()
         self.assertEqual(env.get("HOME"), "/h")
         self.assertEqual(env["HERMES_SAFE_MODE"], "1")
@@ -973,10 +1081,18 @@ import os
 import re
 import sys
 
-_REQUIRED = {"enabled_toolsets", "skip_context_files", "skip_memory",
-             "load_soul_identity", "session_db", "stream_delta_callback"}
+_REQUIRED = {
+    "enabled_toolsets",
+    "skip_context_files",
+    "skip_memory",
+    "load_soul_identity",
+    "session_db",
+    "stream_delta_callback",
+}
 _RATE = re.compile(r"\b429\b|rate.?limit|usage limit|too many requests|quota", re.I)
-_MODEL = re.compile(r"model[^.]{0,80}not supported|model_not_found|invalid model|unknown model", re.I)
+_MODEL = re.compile(
+    r"model[^.]{0,80}not supported|model_not_found|invalid model|unknown model", re.I
+)
 
 
 def _config() -> dict:
@@ -986,8 +1102,14 @@ def _config() -> dict:
     model = load_config().get("model") or {}
     if isinstance(model, str):
         model = {"default": model}
-    name = model.get("default") or model.get("model") or os.environ.get("HERMES_INFERENCE_MODEL")
-    provider = model.get("provider") or os.environ.get("HERMES_INFERENCE_PROVIDER") or "auto"
+    name = (
+        model.get("default")
+        or model.get("model")
+        or os.environ.get("HERMES_INFERENCE_MODEL")
+    )
+    provider = (
+        model.get("provider") or os.environ.get("HERMES_INFERENCE_PROVIDER") or "auto"
+    )
     if not name:
         raise RuntimeError("No Hermes model configured; run hermes setup")
     return {"model": name, "provider": provider}
@@ -1024,17 +1146,35 @@ def main() -> int:
                 raise RuntimeError("Update Hermes: text-only SDK controls are missing")
             request = json.load(sys.stdin)
             model = request.get("model") or info["model"]
-            runtime = resolve_runtime_provider(requested=info["provider"], target_model=model)
-            kwargs = dict(
-                model=model, api_key=runtime.get("api_key"), base_url=runtime.get("base_url"),
-                provider=runtime.get("provider"), enabled_toolsets=[], max_iterations=2,
-                quiet_mode=True, save_trajectories=False, verbose_logging=False,
-                skip_context_files=True, load_soul_identity=False, skip_memory=True,
-                session_db=None,
-                stream_delta_callback=lambda text, *_: text and emit({"type": "delta", "text": text}),
-                ephemeral_system_prompt=request.get("system") or "Respond with text only.",
+            runtime = resolve_runtime_provider(
+                requested=info["provider"], target_model=model
             )
-            for name in ("api_mode", "credential_pool", "request_overrides", "service_tier"):
+            kwargs = dict(
+                model=model,
+                api_key=runtime.get("api_key"),
+                base_url=runtime.get("base_url"),
+                provider=runtime.get("provider"),
+                enabled_toolsets=[],
+                max_iterations=2,
+                quiet_mode=True,
+                save_trajectories=False,
+                verbose_logging=False,
+                skip_context_files=True,
+                load_soul_identity=False,
+                skip_memory=True,
+                session_db=None,
+                stream_delta_callback=lambda text, *_: (
+                    text and emit({"type": "delta", "text": text})
+                ),
+                ephemeral_system_prompt=request.get("system")
+                or "Respond with text only.",
+            )
+            for name in (
+                "api_mode",
+                "credential_pool",
+                "request_overrides",
+                "service_tier",
+            ):
                 if name in signature.parameters and runtime.get(name) is not None:
                     kwargs[name] = runtime[name]
             agent = AIAgent(**kwargs)
@@ -1046,7 +1186,10 @@ def main() -> int:
             message = request["prompt"]
             if images:
                 message = [{"type": "text", "text": request["prompt"]}] + [
-                    {"type": "image_url", "image_url": {"url": "data:image/png;base64," + b64}}
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": "data:image/png;base64," + b64},
+                    }
                     for b64 in images
                 ]
             result = agent.run_conversation(message)
@@ -1091,12 +1234,19 @@ from .process import stream_process
 
 NAME = "hermes"
 LABEL = "Hermes"
-MODEL_SUGGESTIONS = ["gpt-6-luna", "gpt-6.1-sol", "gpt-5.6-luna", "gpt-6-sol", "gpt-6-astra"]
+MODEL_SUGGESTIONS = [
+    "gpt-6-luna",
+    "gpt-6.1-sol",
+    "gpt-5.6-luna",
+    "gpt-6-sol",
+    "gpt-6-astra",
+]
 RUNNER = Path(__file__).with_name("hermes_runner.py")
 _ERRORS = {
     "rate_limit": RateLimitError("Subscription usage limit reached; try again later"),
     "model_unavailable": ModelUnavailableError(
-        "This model is not available for your account on this AI Backend"),
+        "This model is not available for your account on this AI Backend"
+    ),
 }
 
 
@@ -1121,17 +1271,29 @@ def _python() -> str:
     for candidate in (path.parent / "python3", path.parent / "python"):
         if candidate.is_file():
             return str(candidate)
-    raise AIError("Could not locate Hermes Python; set HERMES_PYTHON to its venv python")
+    raise AIError(
+        "Could not locate Hermes Python; set HERMES_PYTHON to its venv python"
+    )
 
 
 def _env() -> dict:
     env = {
-        k: v for k, v in os.environ.items()
-        if not k.startswith(("HERMES_GATEWAY_", "HERMES_KANBAN_", "HERMES_PARENT_", "HERMES_SESSION"))
+        k: v
+        for k, v in os.environ.items()
+        if not k.startswith(
+            ("HERMES_GATEWAY_", "HERMES_KANBAN_", "HERMES_PARENT_", "HERMES_SESSION")
+        )
     }
-    for name in ("PYTHONPATH", "PYTHONHOME", "_HERMES_GATEWAY", "HERMES_EPHEMERAL_SYSTEM_PROMPT",
-                 "HERMES_PREFILL_MESSAGES_FILE", "HERMES_INTERACTIVE", "HERMES_YOLO_MODE",
-                 "HERMES_ACCEPT_HOOKS"):
+    for name in (
+        "PYTHONPATH",
+        "PYTHONHOME",
+        "_HERMES_GATEWAY",
+        "HERMES_EPHEMERAL_SYSTEM_PROMPT",
+        "HERMES_PREFILL_MESSAGES_FILE",
+        "HERMES_INTERACTIVE",
+        "HERMES_YOLO_MODE",
+        "HERMES_ACCEPT_HOOKS",
+    ):
         env.pop(name, None)
     env["HERMES_SAFE_MODE"] = "1"
     return env
@@ -1146,24 +1308,37 @@ def describe() -> dict:
 @functools.lru_cache(maxsize=4)
 def _describe(python: str, stamp: int) -> dict:
     try:
-        out = subprocess.run([python, str(RUNNER), "--info"], capture_output=True,
-                             env=_env(), timeout=30, check=False)
+        out = subprocess.run(
+            [python, str(RUNNER), "--info"],
+            capture_output=True,
+            env=_env(),
+            timeout=30,
+            check=False,
+        )
         return json.loads(out.stdout)
     except (OSError, subprocess.TimeoutExpired, ValueError) as exc:
         raise AIError("Could not read Hermes configuration; run hermes setup") from exc
 
 
 async def _events(prompt, model, system, images):
-    payload = {"prompt": prompt, "model": model, "system": system,
-               "images": [base64.b64encode(png).decode() for png in images]}
-    async for line in stream_process([_python(), str(RUNNER)],
-                                     json.dumps(payload).encode("utf-8"), _env()):
+    payload = {
+        "prompt": prompt,
+        "model": model,
+        "system": system,
+        "images": [base64.b64encode(png).decode() for png in images],
+    }
+    async for line in stream_process(
+        [_python(), str(RUNNER)], json.dumps(payload).encode("utf-8"), _env()
+    ):
         try:
             event = json.loads(line)
         except ValueError as exc:
             raise AIError("Hermes returned an invalid message") from exc
         if event.get("type") == "error":
-            raise _ERRORS.get(event.get("kind"), AIError("Hermes request failed; check login and model"))
+            raise _ERRORS.get(
+                event.get("kind"),
+                AIError("Hermes request failed; check login and model"),
+            )
         yield event
 
 
@@ -1267,6 +1442,7 @@ from app.errors import AIError, RateLimitError
 
 def settings_for(backend="hermes", concurrency=8):
     from app import settings
+
     s = settings.load()
     s["backend"] = backend
     s["concurrency"][backend] = concurrency
@@ -1281,7 +1457,9 @@ class FakeBackend:
         self.active = self.peak = 0
 
     async def run(self, prompt, *, model, system=None, images=()):
-        self.calls.append(dict(prompt=prompt, model=model, system=system, images=list(images)))
+        self.calls.append(
+            dict(prompt=prompt, model=model, system=system, images=list(images))
+        )
         self.active += 1
         self.peak = max(self.peak, self.active)
         await asyncio.sleep(0.02)
@@ -1311,7 +1489,9 @@ class AiTests(unittest.IsolatedAsyncioTestCase):
         self.use(fake)
         await ai.summarize("paper")
         await ai.translate("text", "Korean")
-        self.assertEqual([c["model"] for c in fake.calls], ["gpt-6.1-sol", "gpt-6-luna"])
+        self.assertEqual(
+            [c["model"] for c in fake.calls], ["gpt-6.1-sol", "gpt-6-luna"]
+        )
         self.assertIn("NOT instructions", fake.calls[0]["prompt"])
 
     async def test_no_backend_selected_is_a_clear_error(self):
@@ -1354,7 +1534,9 @@ class AiTests(unittest.IsolatedAsyncioTestCase):
         fake = FakeBackend(text="answer")
         self.use(fake)
         history = [{"role": "user", "text": "Q1"}, {"role": "assistant", "text": "A1"}]
-        self.assertEqual(await ai.chat("Q2", paper_text="PAPER", history=history), "answer")
+        self.assertEqual(
+            await ai.chat("Q2", paper_text="PAPER", history=history), "answer"
+        )
         prompt = fake.calls[0]["prompt"]
         for part in ("PAPER", "Q1", "A1", "Q2"):
             self.assertIn(part, prompt)
@@ -1424,7 +1606,9 @@ def _limit(name: str) -> asyncio.Semaphore:
 async def _run(task: str, prompt: str, system: str | None, images=()) -> str:
     name = current_backend()
     async with _limit(name):
-        return await backends.get(name).run(prompt, model=model(task), system=system, images=images)
+        return await backends.get(name).run(
+            prompt, model=model(task), system=system, images=images
+        )
 
 
 async def probe(backend: str, model_id: str) -> None:
@@ -1469,7 +1653,9 @@ async def translate_brief(front_matter: str, target_lang: str) -> str:
     return (await _run("brief", prompt, _BRIEF_SYS)).strip()
 
 
-async def translate_segments(segments: list[str], target_lang: str, brief: str = "") -> list[str] | None:
+async def translate_segments(
+    segments: list[str], target_lang: str, brief: str = ""
+) -> list[str] | None:
     if not segments:
         return []
     numbered = "\n".join(f"{i + 1}. {s}" for i, s in enumerate(segments))
@@ -1512,7 +1698,9 @@ async def translate_stream(segments: list[str], target_lang: str, brief: str = "
     name = current_backend()
     buf = ""
     async with _limit(name):
-        chunks = backends.get(name).stream(prompt, model=model("translate"), system=_TRANSLATE_SYS)
+        chunks = backends.get(name).stream(
+            prompt, model=model("translate"), system=_TRANSLATE_SYS
+        )
         try:
             async for delta in chunks:
                 buf += delta
@@ -1529,8 +1717,14 @@ async def translate_stream(segments: list[str], target_lang: str, brief: str = "
 async def equation_latex(png: bytes) -> str:
     """Transcribe one display equation from its rendered crop. The image travels inline in the
     message with every tool disabled (ADR 0002)."""
-    latex = (await _run("equation", "Transcribe the equation in this image as LaTeX.",
-                        _MATH_SYS, images=[png])).strip()
+    latex = (
+        await _run(
+            "equation",
+            "Transcribe the equation in this image as LaTeX.",
+            _MATH_SYS,
+            images=[png],
+        )
+    ).strip()
     latex = re.sub(r"^```(?:latex)?\s*|\s*```$", "", latex).strip()
     if latex.startswith("\\[") and latex.endswith("\\]"):
         latex = latex[2:-2].strip()
@@ -1549,7 +1743,8 @@ async def chat(question: str, *, paper_text: str, history: list[dict]) -> str:
     )
     prompt = (
         "Answer my questions using only the paper below. Ground each claim in the paper's "
-        "wording.\n\n" + _paper(paper_text)
+        "wording.\n\n"
+        + _paper(paper_text)
         + (f"\n\nCONVERSATION SO FAR:\n{turns}" if turns else "")
         + f"\n\nQUESTION: {question}"
     )
@@ -1643,7 +1838,9 @@ class ApiTests(unittest.TestCase):
         self.dir = tempfile.TemporaryDirectory()
         root = Path(self.dir.name)
         self.patches = [
-            patch.dict(os.environ, {"PAPER_READER_SETTINGS": str(root / "settings.json")}),
+            patch.dict(
+                os.environ, {"PAPER_READER_SETTINGS": str(root / "settings.json")}
+            ),
             patch.object(store, "CACHE", root / "cache"),
             patch.object(store, "CHATS", root / "chats"),
             patch("app.main._require_doc", return_value=DOC),
@@ -1652,7 +1849,9 @@ class ApiTests(unittest.TestCase):
             p.start()
         os.environ.pop("PAPER_READER_BACKEND", None)
         settings.save("hermes", {}, 8)
-        self.client = TestClient(main.app)  # not a context manager: skips the model warm-up
+        self.client = TestClient(
+            main.app
+        )  # not a context manager: skips the model warm-up
 
     def tearDown(self):
         for p in reversed(self.patches):
@@ -1661,8 +1860,10 @@ class ApiTests(unittest.TestCase):
 
     def test_config_with_no_backend_installed(self):
         settings.settings_path().unlink()
-        with patch("app.backends.claude.installed", return_value=False), \
-             patch("app.backends.hermes.installed", return_value=False):
+        with (
+            patch("app.backends.claude.installed", return_value=False),
+            patch("app.backends.hermes.installed", return_value=False),
+        ):
             body = self.client.get("/api/config").json()
         self.assertIsNone(body["backend"])
         self.assertIn("install", body["reason"].lower())
@@ -1670,27 +1871,45 @@ class ApiTests(unittest.TestCase):
 
     def test_config_picks_the_only_installed_backend_after_a_probe(self):
         settings.settings_path().unlink()
-        with patch("app.backends.claude.installed", return_value=True), \
-             patch("app.backends.hermes.installed", return_value=False), \
-             patch("app.main.ai.probe", new=AsyncMock()) as probe:
+        with (
+            patch("app.backends.claude.installed", return_value=True),
+            patch("app.backends.hermes.installed", return_value=False),
+            patch("app.main.ai.probe", new=AsyncMock()) as probe,
+        ):
             body = self.client.get("/api/config").json()
         self.assertEqual(body["backend"], "claude")
         probe.assert_awaited_once()
         self.assertEqual(settings.load()["backend"], "claude")
 
     def test_settings_save_rejects_unavailable_model(self):
-        error = ModelUnavailableError("This model is not available for your account on this AI Backend")
+        error = ModelUnavailableError(
+            "This model is not available for your account on this AI Backend"
+        )
         with patch("app.main.ai.probe", new=AsyncMock(side_effect=error)):
-            r = self.client.post("/api/settings", json={
-                "backend": "hermes", "models": {"translate": "gpt-6.1-luna"}, "concurrency": 8})
+            r = self.client.post(
+                "/api/settings",
+                json={
+                    "backend": "hermes",
+                    "models": {"translate": "gpt-6.1-luna"},
+                    "concurrency": 8,
+                },
+            )
         self.assertEqual(r.status_code, 400)
         self.assertIn("gpt-6.1-luna", r.json()["detail"])
-        self.assertEqual(settings.model_for(settings.load(), "hermes", "translate"), "gpt-6-luna")
+        self.assertEqual(
+            settings.model_for(settings.load(), "hermes", "translate"), "gpt-6-luna"
+        )
 
     def test_settings_save_probes_each_distinct_model_once(self):
         with patch("app.main.ai.probe", new=AsyncMock()) as probe:
-            r = self.client.post("/api/settings", json={
-                "backend": "claude", "models": {"chat": "opus"}, "concurrency": 4})
+            r = self.client.post(
+                "/api/settings",
+                json={
+                    "backend": "claude",
+                    "models": {"chat": "opus"},
+                    "concurrency": 4,
+                },
+            )
         self.assertEqual(r.status_code, 200)
         probed = sorted(call.args[1] for call in probe.await_args_list)
         self.assertEqual(probed, ["claude-haiku-5-5", "opus", "sonnet"])
@@ -1702,7 +1921,9 @@ class ApiTests(unittest.TestCase):
             settings.save("claude", {}, 8)
             self.client.post("/api/summarize", json={"doc_id": "d"})
         names = sorted(p.name for p in (store.CACHE / "d").iterdir())
-        self.assertEqual(names, ["summary_claude-sonnet.json", "summary_hermes-gpt-6.1-sol.json"])
+        self.assertEqual(
+            names, ["summary_claude-sonnet.json", "summary_hermes-gpt-6.1-sol.json"]
+        )
 
     def test_chat_history_survives_backend_switch(self):
         answers = AsyncMock(side_effect=["A1", "A2"])
@@ -1711,15 +1932,19 @@ class ApiTests(unittest.TestCase):
             settings.save("claude", {}, 8)
             self.client.post("/api/chat", json={"doc_id": "d", "question": "Q2"})
         second = answers.await_args_list[1]
-        self.assertEqual(second.kwargs["history"], [
-            {"role": "user", "text": "Q1"}, {"role": "assistant", "text": "A1"}])
+        self.assertEqual(
+            second.kwargs["history"],
+            [{"role": "user", "text": "Q1"}, {"role": "assistant", "text": "A1"}],
+        )
         turns = self.client.get("/api/chat/d").json()["turns"]
         self.assertEqual([t["text"] for t in turns], ["Q1", "A1", "Q2", "A2"])
         self.client.post("/api/chat/d/reset")
         self.assertEqual(self.client.get("/api/chat/d").json()["turns"], [])
 
     def test_rate_limit_maps_to_429(self):
-        with patch("app.main.ai.summarize", new=AsyncMock(side_effect=RateLimitError("limit"))):
+        with patch(
+            "app.main.ai.summarize", new=AsyncMock(side_effect=RateLimitError("limit"))
+        ):
             r = self.client.post("/api/summarize", json={"doc_id": "d"})
         self.assertEqual(r.status_code, 429)
         self.assertTrue(r.json()["rate_limited"])
@@ -1729,15 +1954,21 @@ class ApiTests(unittest.TestCase):
             yield (0, "가")
             raise RateLimitError("limit")
 
-        with patch("app.main.ai.translate_stream", new=stream), \
-             patch("app.main._get_brief", new=AsyncMock(return_value="")):
-            r = self.client.post("/api/translate_stream",
-                                 json={"doc_id": "d", "page": 0, "segments": ["a", "b"]})
+        with (
+            patch("app.main.ai.translate_stream", new=stream),
+            patch("app.main._get_brief", new=AsyncMock(return_value="")),
+        ):
+            r = self.client.post(
+                "/api/translate_stream",
+                json={"doc_id": "d", "page": 0, "segments": ["a", "b"]},
+            )
         lines = [json.loads(x) for x in r.text.splitlines()]
         self.assertEqual(lines[0], {"i": 0, "tr": "가"})
         self.assertEqual(lines[-1]["rate_limited"], True)
-        self.assertFalse((store.CACHE / "d").exists() and any(
-            p.name.startswith("tr_") for p in (store.CACHE / "d").iterdir()))
+        self.assertFalse(
+            (store.CACHE / "d").exists()
+            and any(p.name.startswith("tr_") for p in (store.CACHE / "d").iterdir())
+        )
 ```
 
 - [ ] **Step 2: Run tests to verify they fail**
@@ -1767,7 +1998,9 @@ def chat_get(doc_id: str) -> list[dict]:
 
 def chat_put(doc_id: str, turns: list[dict]) -> None:
     CHATS.mkdir(parents=True, exist_ok=True)
-    (CHATS / f"{doc_id}.json").write_text(json.dumps(turns, ensure_ascii=False), "utf-8")
+    (CHATS / f"{doc_id}.json").write_text(
+        json.dumps(turns, ensure_ascii=False), "utf-8"
+    )
 
 
 def chat_clear(doc_id: str) -> None:
@@ -1792,8 +2025,10 @@ from .errors import AIError, RateLimitError
 @app.exception_handler(AIError)
 async def _ai_error(_request: Request, exc: AIError):
     limited = isinstance(exc, RateLimitError)
-    return JSONResponse(status_code=429 if limited else 502,
-                        content={"detail": str(exc), "rate_limited": limited})
+    return JSONResponse(
+        status_code=429 if limited else 502,
+        content={"detail": str(exc), "rate_limited": limited},
+    )
 ```
 
 3. Remove every `model: str = claude.DEFAULT_MODEL` field from `SummarizeReq`, `AnatomyReq`, `TranslateReq`, `ExplainReq`, `ChatReq` (add `model_config = {"extra": "ignore"}` is the pydantic default, nothing to add). Remove `model = claude.normalize_model(...)` lines.
@@ -1837,24 +2072,29 @@ and remove `import tempfile` if unused.
 7. `/api/translate_stream` generator: wrap the loop so a backend error ends the stream with an error line and skips caching:
 
 ```python
-        collected: dict[int, str] = {}
-        nxt = 0
-        chunks = ai.translate_stream(segs, req.target_lang, brief=brief)
-        try:
-            async for idx, tr in chunks:
-                if idx is None:
-                    idx = nxt
-                if not (0 <= idx < len(segs)) or idx in collected:
-                    continue
-                nxt = idx + 1
-                collected[idx] = tr
-                yield json.dumps({"i": idx, "tr": tr}, ensure_ascii=False) + "\n"
-        except AIError as exc:
-            yield json.dumps({"error": str(exc), "rate_limited": isinstance(exc, RateLimitError)},
-                             ensure_ascii=False) + "\n"
-            return
-        finally:
-            await chunks.aclose()
+collected: dict[int, str] = {}
+nxt = 0
+chunks = ai.translate_stream(segs, req.target_lang, brief=brief)
+try:
+    async for idx, tr in chunks:
+        if idx is None:
+            idx = nxt
+        if not (0 <= idx < len(segs)) or idx in collected:
+            continue
+        nxt = idx + 1
+        collected[idx] = tr
+        yield json.dumps({"i": idx, "tr": tr}, ensure_ascii=False) + "\n"
+except AIError as exc:
+    yield (
+        json.dumps(
+            {"error": str(exc), "rate_limited": isinstance(exc, RateLimitError)},
+            ensure_ascii=False,
+        )
+        + "\n"
+    )
+    return
+finally:
+    await chunks.aclose()
 ```
 
 Also wrap `brief = await _get_brief(...)` inside the generator the same way (a `RateLimitError` there yields the error line and returns).
@@ -1866,10 +2106,17 @@ Also wrap `brief = await _get_brief(...)` inside the generator the same way (a `
 async def chat(req: ChatReq):
     doc = _require_doc(req.doc_id)
     history = store.chat_get(req.doc_id)
-    answer = await ai.chat(req.question, paper_text=pdf_utils.full_text(doc["pages"]),
-                           history=history)
-    store.chat_put(req.doc_id, history + [{"role": "user", "text": req.question},
-                                          {"role": "assistant", "text": answer}])
+    answer = await ai.chat(
+        req.question, paper_text=pdf_utils.full_text(doc["pages"]), history=history
+    )
+    store.chat_put(
+        req.doc_id,
+        history
+        + [
+            {"role": "user", "text": req.question},
+            {"role": "assistant", "text": answer},
+        ],
+    )
     return {"answer": answer}
 
 
@@ -1896,8 +2143,15 @@ def _backend_rows() -> list[dict]:
                 provider = mod.describe().get("provider")
             except AIError:
                 provider = None
-        rows.append({"id": name, "label": mod.LABEL, "installed": mod.installed(),
-                     "provider": provider, "suggestions": mod.MODEL_SUGGESTIONS})
+        rows.append(
+            {
+                "id": name,
+                "label": mod.LABEL,
+                "installed": mod.installed(),
+                "provider": provider,
+                "suggestions": mod.MODEL_SUGGESTIONS,
+            }
+        )
     return rows
 
 
@@ -1925,9 +2179,14 @@ async def config():
     if backend is None:
         backend, reason = await _first_run_backend(rows)
         s = settings.load()
-    return {"backend": backend, "reason": reason, "backends": rows,
-            "tasks": list(settings.TASKS), "models": s["models"],
-            "concurrency": s["concurrency"]}
+    return {
+        "backend": backend,
+        "reason": reason,
+        "backends": rows,
+        "tasks": list(settings.TASKS),
+        "models": s["models"],
+        "concurrency": s["concurrency"],
+    }
 
 
 class SettingsReq(BaseModel):
@@ -2033,7 +2292,9 @@ ROOT = Path(__file__).resolve().parents[1]
 @unittest.skipUnless(shutil.which("node"), "node is only needed for JS checks")
 class FrontendTests(unittest.TestCase):
     def node(self, script):
-        r = subprocess.run(["node", script], cwd=ROOT, capture_output=True, text=True, timeout=30)
+        r = subprocess.run(
+            ["node", script], cwd=ROOT, capture_output=True, text=True, timeout=30
+        )
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
 
     def test_syntax(self):
