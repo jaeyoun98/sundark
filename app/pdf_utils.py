@@ -696,6 +696,49 @@ def _page_layout(
             # Consecutive such lines (one box spans the whole equation) group into one segment.
             ln["math"] = _in_rects(ln["cx"], ln["cy"], formula_rects)
 
+        # Rejoin fragments the PDF split WITHIN one visual line. Inline math — e.g. "(0, σ²I)" in
+        # "… and N(0, σ²I) is Gaussian noise added …" — is often typeset as its own text block
+        # beside the prose, and a display equation is likewise split into adjacent spans. Two
+        # reading-order-adjacent lines on the same baseline, separated by only a small horizontal
+        # gap, are the same visual line, so merge them; otherwise that inline block breaks the
+        # sentence (and its highlight). The gap guard keeps a two-column row apart — its halves are
+        # far apart, and reading order never puts two columns' lines adjacent at the same y.
+        def _lright(ln):
+            return max(words[g]["x1"] for g in ln["widx"])
+
+        def _recompute(ln):
+            ln["text"] = " ".join(words[g]["t"] for g in ln["widx"])
+            ln["size"] = statistics.median(ln["sizes"]) if ln["sizes"] else 0
+            ln["top"], ln["bottom"], ln["left"] = (
+                min(ln["y0"]),
+                max(ln["y1"]),
+                min(ln["x0"]),
+            )
+            ln["h"] = ln["bottom"] - ln["top"]
+            ln["cx"] = (min(ln["x0"]) + _lright(ln)) / 2
+            ln["cy"] = (ln["top"] + ln["bottom"]) / 2
+            ln["math"] = _in_rects(ln["cx"], ln["cy"], formula_rects)
+
+        merged_lines = []
+        for ln in lines:
+            if merged_lines:
+                prev = merged_lines[-1]
+                size = prev["size"] or ln["size"] or 10
+                gap = ln["left"] - _lright(prev)
+                same_baseline = (
+                    abs(ln["cy"] - prev["cy"]) <= max(prev["h"], ln["h"]) * 0.6
+                )
+                if same_baseline and -size <= gap <= size * 1.8:
+                    prev["widx"].extend(ln["widx"])
+                    prev["sizes"].extend(ln["sizes"])
+                    prev["y0"].extend(ln["y0"])
+                    prev["y1"].extend(ln["y1"])
+                    prev["x0"].extend(ln["x0"])
+                    _recompute(prev)
+                    continue
+            merged_lines.append(ln)
+        lines = merged_lines
+
         # Drop running headers/footers (repeated top/bottom lines across pages).
         if headers:
             lines = [

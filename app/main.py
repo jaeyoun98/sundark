@@ -147,8 +147,9 @@ _layout_lock = asyncio.Lock()
 # cross-page stitch skips figure/table caption blocks. v4: merge lowercase-starting over-split
 # fragments from spaced inline math. A hybrid-heading attempt was tried and reverted — it hurt
 # precision on the .tex eval — so heading detection stays pure title-box. v5: strip C0/DEL control
-# characters (PDF math bracket delimiters) from word tokens.)
-_LAYOUT_VERSION = 5
+# characters (PDF math bracket delimiters) from word tokens. v6: rejoin same-baseline line
+# fragments the PDF split around inline math.)
+_LAYOUT_VERSION = 6
 
 
 def _page_layout_cached(doc_id: str, page: int) -> dict:
