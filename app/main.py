@@ -145,9 +145,10 @@ _layout_lock = asyncio.Lock()
 # instead of silently reused. The translation cache keys on a segment signature, so it follows
 # automatically; only the layout cache needs this tag. (v2: pure-YOLO region typing. v3:
 # cross-page stitch skips figure/table caption blocks. v4: merge lowercase-starting over-split
-# fragments from spaced inline math. A hybrid-heading v5 was tried and reverted — it hurt
-# precision on the .tex eval — so heading detection stays pure title-box, i.e. v4 output.)
-_LAYOUT_VERSION = 4
+# fragments from spaced inline math. A hybrid-heading attempt was tried and reverted — it hurt
+# precision on the .tex eval — so heading detection stays pure title-box. v5: strip C0/DEL control
+# characters (PDF math bracket delimiters) from word tokens.)
+_LAYOUT_VERSION = 5
 
 
 def _page_layout_cached(doc_id: str, page: int) -> dict:

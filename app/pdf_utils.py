@@ -154,6 +154,12 @@ _ABBR_TAIL = re.compile(
 
 _BULLET_CHARS = "•◦▪▫●○‣⁃∙"
 
+# C0/DEL control characters a PDF uses as large-bracket delimiters inside math (e.g. N\x000,σ²I\x01).
+# They are garbage in the text layer, so strip them from every word token before anything else sees
+# them — otherwise they leak into a sentence as a fragment like "0 , σ 2 I \x01".
+_CTRL_STRIP = {c: None for c in range(0x20) if c not in (0x09, 0x0A, 0x0D)}
+_CTRL_STRIP[0x7F] = None
+
 
 def _split_on_bullets(raw: list[tuple[int, int]], text: str) -> list[tuple[int, int]]:
     """Split sentence ranges at bullet markers so each list item is its own segment."""
@@ -304,7 +310,7 @@ def _words_with_style(page) -> list[dict]:
                 pos = sx0
                 for tok in re.findall(r"\S+\s*", stext):
                     wx1 = pos + cw * len(tok)
-                    t = tok.strip()
+                    t = tok.strip().translate(_CTRL_STRIP)
                     if t:
                         out.append(
                             {
