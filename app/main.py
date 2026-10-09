@@ -10,15 +10,15 @@ import asyncio
 import hashlib
 import json
 import os
-import tempfile
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, UploadFile
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi import FastAPI, HTTPException, Request, UploadFile
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import claude, layout_model, pdf_utils, store
+from . import ai, backends, layout_model, pdf_utils, settings, store
+from .errors import AIError, RateLimitError
 
 ROOT = Path(__file__).resolve().parent.parent
 WEB = ROOT / "web"
@@ -28,6 +28,15 @@ PAPERS_DIR = Path(os.environ.get("PAPERS_DIR", ROOT / "papers")).resolve()
 PAPERS_DIR.mkdir(parents=True, exist_ok=True)
 
 app = FastAPI(title="Paper Reader")
+
+
+@app.exception_handler(AIError)
+async def _ai_error(_request: Request, exc: AIError):
+    limited = isinstance(exc, RateLimitError)
+    return JSONResponse(
+        status_code=429 if limited else 502,
+        content={"detail": str(exc), "rate_limited": limited},
+    )
 
 
 @app.on_event("startup")
@@ -51,10 +60,6 @@ async def _warm_layout_model() -> None:
         "Sentence model ready." if seg else "Sentence model unavailable — using pysbd.",
         flush=True,
     )
-
-
-# In-memory chat sessions: doc_id -> claude session_id (reset on restart; fine for a personal tool).
-_chat_sessions: dict[str, str] = {}
 
 
 def _ingest(data: bytes) -> dict:
@@ -242,17 +247,16 @@ async def layout(doc_id: str, page: int):
 
 
 @app.get("/api/math/{doc_id}/{page}")
-async def math(doc_id: str, page: int, model: str = claude.DEFAULT_MODEL):
+async def math(doc_id: str, page: int):
     """LaTeX for each display equation on a page, read from the rendered crop by a vision call.
     Compiled PDFs scramble 2D math in the text layer, so we transcribe the image instead.
     Returns {"equations": [{"i": segment_index, "latex": "..."}]} (cached per page/model)."""
     doc = _require_doc(doc_id)
     if not (0 <= page < doc["meta"]["num_pages"]):
         raise HTTPException(400, "page out of range")
-    m = claude.normalize_model(model)
     # Keyed by _LAYOUT_VERSION too: the result stores segment indices, which shift when layout()
     # changes, so an older cache would map equations onto the wrong segments.
-    key = f"math_v{_LAYOUT_VERSION}_{m}_{page}"
+    key = f"math_v{_LAYOUT_VERSION}_{ai.cache_tag('equation')}_{page}"
     cached = store.cache_get(doc_id, key)
     if cached:
         return cached
@@ -271,15 +275,12 @@ async def math(doc_id: str, page: int, model: str = claude.DEFAULT_MODEL):
             max(words[j]["y1"] for j in idxs),
         )
         png = pdf_utils.crop_region_png(pdf_bytes, page, bbox)
-        with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
-            f.write(png)
-            tmp = f.name
         try:
-            latex = await claude.equation_latex(tmp, model=m)
-        except claude.ClaudeError:
-            latex = ""  # best-effort: leave the original text if a crop can't be read
-        finally:
-            os.unlink(tmp)
+            latex = await ai.equation_latex(png)
+        except RateLimitError:
+            raise
+        except AIError:
+            latex = ""  # best-effort: keep the original text if a crop can't be read
         if latex:
             out.append({"i": i, "latex": latex})
     result = {"equations": out}
@@ -310,19 +311,17 @@ async def upload(file: UploadFile):
 
 class SummarizeReq(BaseModel):
     doc_id: str
-    model: str = claude.DEFAULT_MODEL
 
 
 @app.post("/api/summarize")
 async def summarize(req: SummarizeReq):
     doc = _require_doc(req.doc_id)
-    model = claude.normalize_model(req.model)
-    key = f"summary_{model}"
+    key = f"summary_{ai.cache_tag('summary')}"
     cached = store.cache_get(req.doc_id, key)
     if cached:
         return cached
     text = pdf_utils.full_text(doc["pages"])
-    summary = await claude.summarize(text, model=model)
+    summary = await ai.summarize(text)
     result = {"summary": summary}
     store.cache_put(req.doc_id, key, result)
     return result
@@ -330,7 +329,6 @@ async def summarize(req: SummarizeReq):
 
 class AnatomyReq(BaseModel):
     doc_id: str
-    model: str = claude.DEFAULT_MODEL
     force: bool = False
 
 
@@ -340,14 +338,13 @@ def _verify_card_quotes(card: dict, paper_text: str) -> None:
         return
     for pt in card.get("points", []) or []:
         if isinstance(pt, dict):
-            pt["verified"] = claude.verify_quote(pt.get("quote") or "", paper_text)
+            pt["verified"] = ai.verify_quote(pt.get("quote") or "", paper_text)
 
 
 @app.post("/api/anatomy")
 async def anatomy(req: AnatomyReq):
     doc = _require_doc(req.doc_id)
-    model = claude.normalize_model(req.model)
-    key = f"anatomy_{model}"
+    key = f"anatomy_{ai.cache_tag('anatomy')}"
     if not req.force:
         cached = store.cache_get(req.doc_id, key)
         if cached:
@@ -355,8 +352,10 @@ async def anatomy(req: AnatomyReq):
 
     text = pdf_utils.full_text(doc["pages"])
     try:
-        result = await claude.anatomy(text, model=model)
-    except claude.ClaudeError as e:
+        result = await ai.anatomy(text)
+    except RateLimitError:
+        raise
+    except AIError as e:
         raise HTTPException(502, f"분석 실패: {e}") from e
 
     # Grounding: flag each point's quote as verified/unverified against the paper text.
@@ -373,7 +372,6 @@ class TranslateReq(BaseModel):
     doc_id: str
     page: int  # 0-indexed
     target_lang: str = "Korean"
-    model: str = claude.DEFAULT_MODEL
     segments: list[str] | None = (
         None  # client-supplied segments (from the PDF text layer)
     )
@@ -387,7 +385,6 @@ async def translate(req: TranslateReq):
     if not (0 <= req.page < len(pages)):
         raise HTTPException(400, "page out of range")
 
-    model = claude.normalize_model(req.model)
     if req.segments:
         segs = [s for s in req.segments if s.strip()]
     else:
@@ -396,7 +393,7 @@ async def translate(req: TranslateReq):
     # Cache key includes a signature of the exact segments, so a change in how the
     # page is split (different count/content) never returns a mismatched cached result.
     sig = hashlib.sha1("\x1f".join(segs).encode("utf-8")).hexdigest()[:10]
-    key = f"tr_{req.target_lang}_{model}_{req.page}_{sig}"
+    key = f"tr_{req.target_lang}_{ai.cache_tag('translate')}_{req.page}_{sig}"
     cached = store.cache_get(req.doc_id, key)
     if cached:
         return cached
@@ -408,12 +405,10 @@ async def translate(req: TranslateReq):
 
     source = "\n\n".join(segs)
     brief = await _get_brief(req.doc_id, doc, req.target_lang)
-    tr = await claude.translate_segments(
-        segs, req.target_lang, model=model, brief=brief
-    )
+    tr = await ai.translate_segments(segs, req.target_lang, brief=brief)
     if tr is None:
         # Alignment failed — fall back to one whole-page translation.
-        whole = await claude.translate(source, req.target_lang, model=model)
+        whole = await ai.translate(source, req.target_lang)
         result = {"segments": [{"src": source, "tr": whole}], "translation": whole}
     else:
         pairs = [{"src": s, "tr": t} for s, t in zip(segs, tr)]
@@ -431,7 +426,6 @@ async def translate_stream(req: TranslateReq):
     if not (0 <= req.page < len(pages)):
         raise HTTPException(400, "page out of range")
 
-    model = claude.normalize_model(req.model)
     # Keep client-supplied segments 1:1 (do NOT drop blank ones): the client numbers results by
     # position within the batch it sent, so filtering here would shift every later index and
     # mis-map the translation and its highlight. Only fall back to splitting the page ourselves
@@ -442,7 +436,7 @@ async def translate_stream(req: TranslateReq):
         else pdf_utils.segment(pages[req.page].strip())
     )
     sig = hashlib.sha1("\x1f".join(segs).encode("utf-8")).hexdigest()[:10]
-    key = f"tr_{req.target_lang}_{model}_{req.page}_{sig}"
+    key = f"tr_{req.target_lang}_{ai.cache_tag('translate')}_{req.page}_{sig}"
 
     async def gen():
         if not req.force:
@@ -456,23 +450,35 @@ async def translate_stream(req: TranslateReq):
         if not segs:
             store.cache_put(req.doc_id, key, {"segments": [], "translation": ""})
             return
-        brief = await _get_brief(req.doc_id, doc, req.target_lang)
         # Map each translation to the segment index the model wrote, so a dropped or merged
-        # line leaves that one segment blank instead of shifting every later one (which showed
-        # up as translation/highlight mismatch). Fall back to a running counter when a line
-        # has no index.
+        # line leaves that one segment blank instead of shifting every later one. Fall back to
+        # a running counter when a line has no index. A backend error ends the stream with an
+        # error line and nothing is cached.
         collected: dict[int, str] = {}
         nxt = 0
-        async for idx, tr in claude.translate_stream(
-            segs, req.target_lang, model=model, brief=brief
-        ):
-            if idx is None:
-                idx = nxt
-            if not (0 <= idx < len(segs)) or idx in collected:
-                continue
-            nxt = idx + 1
-            collected[idx] = tr
-            yield json.dumps({"i": idx, "tr": tr}, ensure_ascii=False) + "\n"
+        try:
+            brief = await _get_brief(req.doc_id, doc, req.target_lang)
+            chunks = ai.translate_stream(segs, req.target_lang, brief=brief)
+            try:
+                async for idx, tr in chunks:
+                    if idx is None:
+                        idx = nxt
+                    if not (0 <= idx < len(segs)) or idx in collected:
+                        continue
+                    nxt = idx + 1
+                    collected[idx] = tr
+                    yield json.dumps({"i": idx, "tr": tr}, ensure_ascii=False) + "\n"
+            finally:
+                await chunks.aclose()
+        except AIError as exc:
+            limited = isinstance(exc, RateLimitError)
+            yield (
+                json.dumps(
+                    {"error": str(exc), "rate_limited": limited}, ensure_ascii=False
+                )
+                + "\n"
+            )
+            return
         pairs = [{"src": segs[k], "tr": collected.get(k, "")} for k in range(len(segs))]
         store.cache_put(
             req.doc_id,
@@ -491,7 +497,6 @@ async def translate_stream(req: TranslateReq):
 class ExplainReq(BaseModel):
     doc_id: str
     text: str
-    model: str = claude.DEFAULT_MODEL
 
 
 @app.post("/api/explain")
@@ -500,28 +505,42 @@ async def explain(req: ExplainReq):
     text = req.text.strip()
     if not text:
         raise HTTPException(400, "No text selected")
-    answer = await claude.explain(text[:4000], model=claude.normalize_model(req.model))
+    answer = await ai.explain(text[:4000])
     return {"explanation": answer}
 
 
 class ChatReq(BaseModel):
     doc_id: str
     question: str
-    model: str = claude.DEFAULT_MODEL
 
 
 @app.post("/api/chat")
 async def chat(req: ChatReq):
     doc = _require_doc(req.doc_id)
-    model = claude.normalize_model(req.model)
-    resume = _chat_sessions.get(req.doc_id)
-    paper_text = None if resume else pdf_utils.full_text(doc["pages"])
-    out = await claude.chat(
-        req.question, paper_text=paper_text, resume=resume, model=model
+    history = store.chat_get(req.doc_id)
+    answer = await ai.chat(
+        req.question, paper_text=pdf_utils.full_text(doc["pages"]), history=history
     )
-    if out.get("session_id"):
-        _chat_sessions[req.doc_id] = out["session_id"]
-    return {"answer": out["text"]}
+    store.chat_put(
+        req.doc_id,
+        history
+        + [
+            {"role": "user", "text": req.question},
+            {"role": "assistant", "text": answer},
+        ],
+    )
+    return {"answer": answer}
+
+
+@app.get("/api/chat/{doc_id}")
+async def chat_history(doc_id: str):
+    return {"turns": store.chat_get(doc_id)}
+
+
+@app.post("/api/chat/{doc_id}/reset")
+async def chat_reset(doc_id: str):
+    store.chat_clear(doc_id)
+    return {"ok": True}
 
 
 def _require_doc(doc_id: str) -> dict:
@@ -535,13 +554,15 @@ async def _get_brief(doc_id: str, doc: dict, target_lang: str) -> str:
     """Per-paper translation glossary, generated once (cheap model) from the front matter and
     cached, then injected into every page's translation for cross-page term consistency.
     Best-effort: if generation fails, translation proceeds without it."""
-    key = f"brief_{target_lang}"
+    key = f"brief_{target_lang}_{ai.cache_tag('brief')}"
     cached = store.cache_get(doc_id, key)
     if cached is not None:
         return cached.get("brief", "")
     try:
         src = pdf_utils.brief_source(doc["pages"])
-        brief = await claude.translate_brief(src, target_lang)
+        brief = await ai.translate_brief(src, target_lang)
+    except RateLimitError:
+        raise
     except Exception:  # noqa: BLE001
         return ""  # non-fatal: a missing glossary just means no extra consistency hint
     store.cache_put(doc_id, key, {"brief": brief})
@@ -558,6 +579,84 @@ async def brief(req: BriefReq):
     """Warm (or return) the cached translation glossary for a paper."""
     doc = _require_doc(req.doc_id)
     return {"brief": await _get_brief(req.doc_id, doc, req.target_lang)}
+
+
+def _backend_rows() -> list[dict]:
+    rows = []
+    for name, mod in backends.BACKENDS.items():
+        provider = None
+        if mod.installed():
+            try:
+                provider = mod.describe().get("provider")
+            except AIError:
+                provider = None
+        rows.append(
+            {
+                "id": name,
+                "label": mod.LABEL,
+                "installed": mod.installed(),
+                "provider": provider,
+                "suggestions": mod.MODEL_SUGGESTIONS,
+            }
+        )
+    return rows
+
+
+async def _first_run_backend(rows: list[dict]) -> tuple[str | None, str | None]:
+    installed = [r["id"] for r in rows if r["installed"]]
+    if not installed:
+        return None, "Install Claude Code or Hermes, sign in, then reload this page."
+    if len(installed) > 1:
+        return None, "Choose an AI Backend in Settings."
+    name = installed[0]
+    s = settings.load()
+    try:
+        await ai.probe(name, settings.model_for(s, name, "translate"))
+    except AIError as exc:
+        return None, f"{backends.get(name).LABEL} is installed but not ready: {exc}"
+    settings.save(name, {}, settings.concurrency_for(s, name))
+    return name, None
+
+
+@app.get("/api/config")
+async def config():
+    rows = _backend_rows()
+    s = settings.load()
+    backend, reason = s["backend"], None
+    if backend is None:
+        backend, reason = await _first_run_backend(rows)
+        s = settings.load()
+    return {
+        "backend": backend,
+        "reason": reason,
+        "backends": rows,
+        "tasks": list(settings.TASKS),
+        "models": s["models"],
+        "concurrency": s["concurrency"],
+    }
+
+
+class SettingsReq(BaseModel):
+    backend: str
+    models: dict[str, str] = {}
+    concurrency: int = settings.DEFAULT_CONCURRENCY
+
+
+@app.post("/api/settings")
+async def save_settings(req: SettingsReq):
+    if req.backend not in backends.BACKENDS:
+        raise HTTPException(400, f"Unknown AI Backend: {req.backend}")
+    merged = {**settings.load()["models"][req.backend], **req.models}
+    for model_id in sorted(set(merged.values())):
+        try:
+            await ai.probe(req.backend, model_id)
+        except AIError as exc:
+            raise HTTPException(400, f"{model_id}: {exc}") from exc
+    try:
+        settings.save(req.backend, req.models, req.concurrency)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    return {"ok": True}
 
 
 # --- static UI (mounted last so /api/* wins) ---
