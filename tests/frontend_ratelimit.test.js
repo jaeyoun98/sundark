@@ -8,6 +8,7 @@ const line = (name) => src.slice(src.indexOf(name), src.indexOf("\n", src.indexO
 const code = [
   line("class RateLimited"),
   pick("async function streamTranslate(", "\n}\n") + "\n}\n",
+  pick("function fillSource(", "\n}\n") + "\n}\n",
   pick("async function translateBatch(", "\n}\n") + "\n}\n",
 ].join("\n");
 

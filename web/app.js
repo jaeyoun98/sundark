@@ -357,7 +357,6 @@ async function translateAll(force) {
 
   async function worker() {
     for (;;) {
-      if (S.rateLimited === token) return;
       if (token !== S.trToken) return;
       if (queue.length === 0) {
         if (produced) return;
@@ -365,6 +364,7 @@ async function translateAll(force) {
         continue;
       }
       const t = queue.shift();
+      if (S.rateLimited === token) { fillSource(t.page, t.batch, token); continue; }  // no more requests
       await translateBatch(t.page, t.batch, force, token);
     }
   }
@@ -529,6 +529,17 @@ function preparePage(i) {
 // Translate one paragraph batch and buffer its sentences; paintFrontier() then shows whatever
 // contiguous prefix is now ready. On failure, fall back to the source text for that batch so the
 // frontier is never permanently stalled on a missing sentence.
+// Fill a batch's still-missing sentences with the source text and repaint. Used when a batch
+// gives up, and for every batch still queued after a rate limit, so the frontier never stalls.
+function fillSource(page, b, token) {
+  const P = S.pages[page];
+  if (!P || token !== S.trToken || !P.trBuf) return;
+  for (let k = b.start; k < b.start + b.texts.length; k++) {
+    if (P.trBuf[k] == null) P.trBuf[k] = P.segs[k] ? P.segs[k].text : "";
+  }
+  paintFrontier();
+}
+
 async function translateBatch(page, b, force, token) {
   const P = S.pages[page];
   if (!P) return;
@@ -553,11 +564,7 @@ async function translateBatch(page, b, force, token) {
   }
   // Last resort: fill any segment still missing with the source text, so a null gap can never
   // permanently stall the strict-order frontier (every later sentence would otherwise stay hidden).
-  if (!live()) return;
-  for (let k = b.start; k < end; k++) {
-    if (P.trBuf[k] == null) P.trBuf[k] = P.segs[k] ? P.segs[k].text : "";
-  }
-  paintFrontier();
+  fillSource(page, b, token);
 }
 
 // Display equations come out of the PDF text layer scrambled; the server re-reads each from

@@ -20,3 +20,6 @@ class FrontendTests(unittest.TestCase):
 
     def test_rate_limit_stops_batch(self):
         self.node("tests/frontend_ratelimit.test.js")
+
+    def test_rate_limit_drains_queued_batches_with_source(self):
+        self.node("tests/frontend_ratelimit_queue.test.js")

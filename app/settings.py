@@ -73,7 +73,8 @@ def concurrency_for(settings: dict, backend: str) -> int:
     return settings["concurrency"][backend]
 
 
-def save(backend: str, models: dict[str, str], concurrency: int) -> None:
+def validate(backend: str, models: dict[str, str], concurrency: int) -> None:
+    """Raise ValueError for anything save() would refuse; cheap, no AI calls."""
     if backend not in BACKEND_NAMES:
         raise ValueError(f"Unknown AI Backend: {backend}")
     for task, model in models.items():
@@ -85,6 +86,10 @@ def save(backend: str, models: dict[str, str], concurrency: int) -> None:
             raise ValueError(f"Invalid model for {task}: {model!r}")
     if not isinstance(concurrency, int) or not 1 <= concurrency <= MAX_CONCURRENCY:
         raise ValueError(f"Concurrency must be 1-{MAX_CONCURRENCY}")
+
+
+def save(backend: str, models: dict[str, str], concurrency: int) -> None:
+    validate(backend, models, concurrency)
     current = load()
     raw = {
         "backend": backend,

@@ -581,13 +581,14 @@ async def brief(req: BriefReq):
     return {"brief": await _get_brief(req.doc_id, doc, req.target_lang)}
 
 
-def _backend_rows() -> list[dict]:
+async def _backend_rows() -> list[dict]:
     rows = []
     for name, mod in backends.BACKENDS.items():
         provider = None
         if mod.installed():
             try:
-                provider = mod.describe().get("provider")
+                # describe() may start a subprocess (Hermes); keep it off the event loop.
+                provider = (await asyncio.to_thread(mod.describe)).get("provider")
             except AIError:
                 provider = None
         rows.append(
@@ -620,7 +621,7 @@ async def _first_run_backend(rows: list[dict]) -> tuple[str | None, str | None]:
 
 @app.get("/api/config")
 async def config():
-    rows = _backend_rows()
+    rows = await _backend_rows()
     s = settings.load()
     backend, reason = s["backend"], None
     if backend is None:
@@ -646,6 +647,10 @@ class SettingsReq(BaseModel):
 async def save_settings(req: SettingsReq):
     if req.backend not in backends.BACKENDS:
         raise HTTPException(400, f"Unknown AI Backend: {req.backend}")
+    try:
+        settings.validate(req.backend, req.models, req.concurrency)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
     merged = {**settings.load()["models"][req.backend], **req.models}
     for model_id in sorted(set(merged.values())):
         try:

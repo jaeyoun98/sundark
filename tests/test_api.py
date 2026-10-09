@@ -152,3 +152,39 @@ class ApiTests(unittest.TestCase):
             (store.CACHE / "d").exists()
             and any(p.name.startswith("tr_") for p in (store.CACHE / "d").iterdir())
         )
+
+    def test_settings_invalid_values_rejected_before_any_probe(self):
+        for body in (
+            {
+                "backend": "claude",
+                "models": {"chat": "bad model id!"},
+                "concurrency": 8,
+            },
+            {"backend": "claude", "models": {"chat": ""}, "concurrency": 8},
+            {"backend": "claude", "models": {"bogus": "opus"}, "concurrency": 8},
+            {"backend": "claude", "models": {}, "concurrency": 0},
+        ):
+            with patch("app.main.ai.probe", new=AsyncMock()) as probe:
+                r = self.client.post("/api/settings", json=body)
+            self.assertEqual(r.status_code, 400, body)
+            probe.assert_not_awaited()
+
+    def test_config_reads_backend_info_off_the_event_loop(self):
+        import asyncio
+
+        seen = []
+
+        def describe():
+            try:
+                asyncio.get_running_loop()
+                seen.append("on-loop")
+            except RuntimeError:
+                seen.append("off-loop")
+            return {"provider": "openai-codex"}
+
+        with (
+            patch("app.backends.hermes.installed", return_value=True),
+            patch("app.backends.hermes.describe", new=describe),
+        ):
+            self.client.get("/api/config")
+        self.assertEqual(seen, ["off-loop"])
