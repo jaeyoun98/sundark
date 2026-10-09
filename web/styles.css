@@ -220,3 +220,13 @@ button { font: inherit; }
 ::-webkit-scrollbar-thumb { background: #2c2c33; border-radius: 6px; border: 2px solid var(--bg); }
 ::-webkit-scrollbar-thumb:hover { background: #3a3a42; }
 ::-webkit-scrollbar-track { background: transparent; }
+
+.ai-banner { position: fixed; top: 60px; left: 50%; transform: translateX(-50%); z-index: 100;
+  padding: 10px 16px; background: var(--panel2); color: var(--text);
+  border: 1px solid var(--accent); border-radius: var(--radius); }
+.settings { border: 1px solid var(--accent); border-radius: var(--radius);
+  background: var(--panel2); color: var(--text); max-width: min(520px, calc(100vw - 32px)); }
+.settings label { display: flex; justify-content: space-between; gap: 12px; margin: 8px 0; }
+.settings input, .settings select { min-width: 220px; }
+.settings-error { color: #f88; }
+.settings-reason { color: var(--accent); }

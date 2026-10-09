@@ -4,7 +4,6 @@ pdfjsLib.GlobalWorkerOptions.workerSrc =
   "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
 
 const $ = (id) => document.getElementById(id);
-const model = () => $("model").value;
 const lang = () => $("lang").value;
 
 const S = {
@@ -18,7 +17,83 @@ const S = {
   anatomyModel: null,
   summaryLoaded: false,
   trToken: 0,
+  aiConfig: null,
+  rateLimited: null,
 };
+
+class RateLimited extends Error {}
+
+const TASK_LABELS = { translate: "Translation", summary: "Summary", anatomy: "Anatomy",
+  chat: "Chat", explain: "Explain", equation: "Equations", brief: "Glossary" };
+
+function showRateLimit() {
+  $("ai-banner").textContent = "구독 사용 한도에 도달했습니다. 남은 번역은 원문으로 표시합니다. 잠시 후 다시 번역하세요.";
+  show($("ai-banner"));
+}
+
+async function loadConfig() {
+  const res = await fetch("/api/config", { cache: "no-store" });
+  S.aiConfig = res.ok ? await res.json() : null;
+  const backend = S.aiConfig && S.aiConfig.backend;
+  const row = backend && S.aiConfig.backends.find((b) => b.id === backend);
+  $("ai-badge").textContent = "AI: " + (row ? row.label : "not set");
+  if (!backend) openSettings();
+}
+
+function fillModels(backend) {
+  const box = $("set-models");
+  box.innerHTML = "";
+  const row = S.aiConfig.backends.find((b) => b.id === backend);
+  const listId = "suggest-" + backend;
+  const list = document.createElement("datalist"); list.id = listId;
+  for (const m of row.suggestions) { const o = document.createElement("option"); o.value = m; list.appendChild(o); }
+  box.appendChild(list);
+  for (const task of S.aiConfig.tasks) {
+    const label = document.createElement("label");
+    label.textContent = TASK_LABELS[task] || task;
+    const input = document.createElement("input");
+    input.dataset.task = task; input.setAttribute("list", listId);
+    input.value = S.aiConfig.models[backend][task];
+    label.appendChild(input); box.appendChild(label);
+  }
+  $("set-conc").value = S.aiConfig.concurrency[backend];
+  $("set-provider").textContent = row.provider ? "Provider: " + row.provider : "";
+}
+
+function openSettings() {
+  if (!S.aiConfig) return;
+  const sel = $("set-backend");
+  sel.innerHTML = "";
+  for (const b of S.aiConfig.backends) {
+    const o = document.createElement("option");
+    o.value = b.id; o.textContent = b.label + (b.installed ? "" : " (not installed)");
+    o.disabled = !b.installed; sel.appendChild(o);
+  }
+  const first = S.aiConfig.backend || (S.aiConfig.backends.find((b) => b.installed) || {}).id;
+  if (first) { sel.value = first; fillModels(first); }
+  $("settings-reason").textContent = S.aiConfig.reason || "";
+  (S.aiConfig.reason ? show : hide)($("settings-reason"));
+  hide($("settings-error"));
+  $("settings").showModal();
+}
+
+$("ai-badge").addEventListener("click", openSettings);
+$("set-backend").addEventListener("change", (e) => fillModels(e.target.value));
+$("settings-cancel").addEventListener("click", () => $("settings").close());
+$("settings-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const models = {};
+  for (const input of $("set-models").querySelectorAll("input[data-task]")) models[input.dataset.task] = input.value.trim();
+  $("settings-save").disabled = true; $("settings-save").textContent = "Testing…";
+  try {
+    await postJSON("/api/settings", { backend: $("set-backend").value, models, concurrency: parseInt($("set-conc").value, 10) });
+    location.reload();  // every cache key and the pool size follow the new settings
+  } catch (err) {
+    $("settings-error").textContent = err.message; show($("settings-error"));
+  } finally {
+    $("settings-save").disabled = false; $("settings-save").textContent = "Save";
+  }
+});
 
 // ================= Library =================
 async function loadLibrary() {
@@ -110,7 +185,7 @@ async function openDoc(meta) {
     $("prep-text").textContent = p + "%";
   };
   setBar(0.1);
-  const autotr = $("autotr").checked;
+  const autotr = $("autotr").checked && !!(S.aiConfig && S.aiConfig.backend);
   // Reveal once the FIRST translated sentence is painted (not the whole first page). paintFrontier
   // fires S.onFirstPaint on the first paint; if auto-translate is off, don't gate on it.
   S.onFirstPaint = null;
@@ -118,8 +193,11 @@ async function openDoc(meta) {
     ? new Promise((resolve) => { S.onFirstPaint = () => { setBar(0.7); resolve(); }; })
     : Promise.resolve();
   if (autotr) translateAll();  // pool starts; page 0 is the frontier → first paint fires onFirstPaint
-  genSummary();   // auto-generate the summary in the background
-  loadAnatomy();  // auto-generate the Research Anatomy in the background
+  if (S.aiConfig && S.aiConfig.backend) {
+    genSummary();   // auto-generate the summary in the background
+    loadAnatomy();  // auto-generate the Research Anatomy in the background
+    loadChat();     // this paper's saved Chat History
+  }
   await Promise.all([firstSentence, waitLayout(Math.min(3, S.numPages))]);
   if (S.docId !== token) return;
   setBar(1);
@@ -252,14 +330,16 @@ async function ensureRendered(i) {
 }
 
 // Translate the whole document with PARAGRAPH-level parallelism: the unit of work is a paragraph
-// batch (not a page), and a pool of TR_POOL workers translates batches concurrently — so even one
+// batch (not a page), and a pool of trPool() workers translates batches concurrently — so even one
 // page keeps the pool busy. A producer walks pages in order, lays each out, builds its (empty)
 // DOM, and enqueues its batches; workers drain the queue. Display stays strictly in order via the
 // sentence-level frontier (see paintFrontier). Equation vision is a second pass after.
-const TR_POOL = 8; // concurrent paragraph-batch translations; the CLI semaphore (8) caps CLI calls
+const trPool = () => (S.aiConfig && S.aiConfig.backend ? S.aiConfig.concurrency[S.aiConfig.backend] : 1);
 async function translateAll(force) {
+  if (!S.aiConfig || !S.aiConfig.backend) return;
   if (!S.docId || !$("autotr").checked) return;
   const token = ++S.trToken;
+  S.rateLimited = null; hide($("ai-banner"));
   const queue = [];   // pending {page, batch} tasks, in document order
   let produced = false;
 
@@ -277,6 +357,7 @@ async function translateAll(force) {
 
   async function worker() {
     for (;;) {
+      if (S.rateLimited === token) return;
       if (token !== S.trToken) return;
       if (queue.length === 0) {
         if (produced) return;
@@ -287,10 +368,10 @@ async function translateAll(force) {
       await translateBatch(t.page, t.batch, force, token);
     }
   }
-  await Promise.all(Array.from({ length: TR_POOL }, worker));
+  await Promise.all(Array.from({ length: trPool() }, worker));
 
   for (let i = 0; i < S.numPages; i++) {      // second pass: upgrade display equations
-    if (token !== S.trToken) return;
+    if (token !== S.trToken || S.rateLimited === token) return;
     await fetchMath(i);
   }
 }
@@ -334,9 +415,12 @@ function buildTrShells() {
 async function streamTranslate(page, offset, texts, force, write) {
   const res = await fetch("/api/translate_stream", {
     method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ doc_id: S.docId, page, target_lang: lang(), model: model(), segments: texts, force: !!force }),
+    body: JSON.stringify({ doc_id: S.docId, page, target_lang: lang(), segments: texts, force: !!force }),
   });
-  if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail || res.statusText);
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw body.rate_limited ? new RateLimited(body.detail) : new Error(body.detail || res.statusText);
+  }
   const reader = res.body.getReader();
   const dec = new TextDecoder();
   let buf = "";
@@ -349,6 +433,7 @@ async function streamTranslate(page, offset, texts, force, write) {
       const line = buf.slice(0, nl); buf = buf.slice(nl + 1);
       if (!line.trim()) continue;
       let obj; try { obj = JSON.parse(line); } catch { continue; }
+      if (obj.error) throw obj.rate_limited ? new RateLimited(obj.error) : new Error(obj.error);
       write(offset + obj.i, obj.tr);
     }
   }
@@ -457,11 +542,11 @@ async function translateBatch(page, b, force, token) {
   // (the model occasionally drops a numbered line). Retries force a fresh call so they don't just
   // replay the cached partial. This is what keeps the odd sentence from staying untranslated.
   for (let attempt = 0; attempt < 3; attempt++) {
-    if (!live()) return;
+    if (!live() || S.rateLimited === token) break;
     try {
       await streamTranslate(page, b.start, b.texts, force || attempt > 0, write);
     } catch (err) {
-      /* fall through to the gap check / retry */
+      if (err instanceof RateLimited) { S.rateLimited = token; showRateLimit(); break; }
     }
     if (!hasGap()) break;
     if (attempt < 2) await sleep(400);
@@ -481,7 +566,7 @@ async function fetchMath(i, wrap) {
   wrap = wrap || $("trlist").children[i];
   if (!wrap) return;
   try {
-    const r = await fetch(`/api/math/${S.docId}/${i}?model=${encodeURIComponent(model())}`);
+    const r = await fetch(`/api/math/${S.docId}/${i}`);
     if (!r.ok) return;
     const d = await r.json();
     if (!d.equations || !d.equations.length) return;
@@ -580,10 +665,6 @@ function clearPdfHover() {
 // Auto-translate toggle / lang / model changes -> re-run the whole-document translation
 $("autotr").addEventListener("change", () => { if ($("autotr").checked) translateAll(); });
 $("lang").addEventListener("change", () => retranslateAll());
-$("model").addEventListener("change", () => {
-  resetSummary(); genSummary();
-  retranslateAll();
-});
 $("retranslate").addEventListener("click", () => retranslateAll(true));
 
 // Translation panel text-size control (dynamic, persisted)
@@ -649,14 +730,14 @@ const EV_SUB = [["dataset_test", "Dataset/Test"], ["metric", "Metric"], ["baseli
 
 async function loadAnatomy(force) {
   if (!S.docId) return;
-  if (!force && S.anatomyLoaded && S.anatomyModel === model()) return;
+  if (!force && S.anatomyLoaded) return;
   if (S.anatomyLoading) return;  // already in flight (open + a tab click would double-fire)
   S.anatomyLoading = true;
   const box = $("anatomy");
   box.innerHTML = '<p class="loading" style="padding:6px">Analyzing structure… (grounded in the source, ~10-30s)</p>';
   try {
-    const d = await postJSON("/api/anatomy", { doc_id: S.docId, model: model(), force: !!force });
-    renderAnatomy(d); S.anatomyLoaded = true; S.anatomyModel = model();
+    const d = await postJSON("/api/anatomy", { doc_id: S.docId, force: !!force });
+    renderAnatomy(d); S.anatomyLoaded = true;
   } catch (err) {
     box.innerHTML = '<p class="loading" style="padding:6px">Error: ' + err.message + "</p>";
   } finally {
@@ -742,7 +823,7 @@ async function genSummary() {
   S.summaryLoaded = true;
   $("summary").innerHTML = '<p class="loading">Summarizing… (first run can take a bit)</p>';
   try {
-    const r = await postJSON("/api/summarize", { doc_id: S.docId, model: model() });
+    const r = await postJSON("/api/summarize", { doc_id: S.docId });
     $("summary").innerHTML = marked.parse(r.summary);
   } catch (err) {
     S.summaryLoaded = false;
@@ -750,6 +831,22 @@ async function genSummary() {
   }
 }
 $("gen-summary").addEventListener("click", () => { S.summaryLoaded = false; genSummary(); });
+
+async function loadChat() {
+  $("chatlog").innerHTML = "";
+  try {
+    const r = await (await fetch(`/api/chat/${S.docId}`)).json();
+    for (const t of r.turns) {
+      const div = addMsg(t.role === "user" ? "user" : "bot", t.text);
+      if (t.role !== "user") { div.innerHTML = marked.parse(t.text); renderMath(div); }
+    }
+  } catch { /* empty chat on failure */ }
+}
+$("chat-reset").addEventListener("click", async () => {
+  if (!S.docId) return;
+  await postJSON(`/api/chat/${S.docId}/reset`, {});
+  $("chatlog").innerHTML = "";
+});
 
 // ================= Chat =================
 let chatCite = null;
@@ -781,7 +878,7 @@ $("chatform").addEventListener("submit", async (e) => {
     ? `논문의 다음 부분에 대한 질문입니다:\n"${cite}"\n\n${q || "이 부분을 설명해줘."}`
     : q;
   try {
-    const r = await postJSON("/api/chat", { doc_id: S.docId, question, model: model() });
+    const r = await postJSON("/api/chat", { doc_id: S.docId, question });
     bot.innerHTML = marked.parse(r.answer);
     renderMath(bot);
   } catch (err) { bot.textContent = "Error: " + err.message; }
@@ -831,7 +928,11 @@ function fmtDate(e) { return new Date(e * 1000).toLocaleDateString(); }
 function esc(s) { return s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c])); }
 async function postJSON(url, body) {
   const res = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
-  if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail || res.statusText);
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    if (data.rate_limited) showRateLimit();
+    throw new Error(data.detail || res.statusText);
+  }
   return res.json();
 }
 async function postForm(url, fd) {
@@ -885,4 +986,4 @@ let resizeT;
 window.addEventListener("resize", () => { clearTimeout(resizeT); resizeT = setTimeout(refitPdf, 300); });
 
 window.S = S; // expose for debugging
-loadLibrary();
+loadConfig().finally(loadLibrary);

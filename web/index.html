@@ -29,16 +29,26 @@
         <option>Chinese</option><option>Spanish</option><option>French</option><option>German</option>
       </select>
     </label>
-    <label class="ctl">Model
-      <select id="model">
-        <option value="claude-haiku-5-5" selected>Haiku 5.5 (fast, default)</option>
-        <option value="sonnet">Sonnet</option>
-        <option value="haiku">Haiku 4.5</option>
-        <option value="opus">Opus (best)</option>
-        <option value="default">Default</option>
-      </select>
-    </label>
+    <button id="ai-badge" class="btn-ghost" type="button" title="AI settings">AI: …</button>
   </header>
+
+  <div id="ai-banner" class="ai-banner hidden" role="alert"></div>
+
+  <dialog id="settings" class="settings">
+    <form method="dialog" id="settings-form">
+      <h3>AI settings</h3>
+      <p id="settings-reason" class="settings-reason hidden"></p>
+      <label>AI Backend <select id="set-backend"></select></label>
+      <p id="set-provider" class="hint"></p>
+      <div id="set-models"></div>
+      <label>Parallel requests <input id="set-conc" type="number" min="1" max="16" /></label>
+      <p id="settings-error" class="settings-error hidden"></p>
+      <menu>
+        <button value="cancel" type="button" id="settings-cancel">Cancel</button>
+        <button id="settings-save" type="submit">Save</button>
+      </menu>
+    </form>
+  </dialog>
 
   <main class="workspace">
     <!-- Library -->
@@ -90,6 +100,7 @@
             <input id="chatinput" type="text" placeholder="이 논문에 대해 질문하기…" autocomplete="off" />
             <button type="submit">Send</button>
           </form>
+          <button id="chat-reset" class="btn-ghost" type="button" title="Clear this paper's chat">대화 지우기</button>
         </div>
       </div>
     </aside>
