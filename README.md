@@ -2,19 +2,19 @@
 
 A personal, local web app for reading conference/journal papers with AI help:
 **summary**, **translation**, a **side-by-side reader**, and **Q&A chat** — with a
-**library** that reads PDFs straight from a folder, and a **model picker**.
+**library** that reads PDFs straight from a folder, and **AI settings** to pick the AI tool and models.
 
-It runs on your **Claude Code subscription** — the backend shells out to the
-logged-in `claude` CLI, so there is **no Anthropic API key and no per-token bill**.
+It runs on a subscription you already have: AI requests go through the AI Backend you choose,
+**Claude Code** or **Hermes**, using that tool's own login. There is **no API key and no
+per-token bill**.
 Inspired by sites like themoonlight.io, but kept simple and private.
 
-> Personal/local use only. No auth. Subscription usage limits apply. To serve other
-> people you must switch `app/claude.py` to the billable Claude API — that one module
-> is the only seam that talks to Claude.
+> Personal/local use only. No auth. Subscription usage limits apply. Only `app/backends/`
+> starts AI processes; serving other people would need a billable API backend there.
 
 ## Requirements (macOS)
 
-1. **Claude Code CLI**, logged in with your subscription:
+1. **Claude Code** or **Hermes**, installed and logged in. Claude Code:
    ```bash
    # if you don't have it yet:
    curl -fsSL https://claude.ai/install.sh | bash      # or: npm i -g @anthropic-ai/claude-code
@@ -25,6 +25,8 @@ Inspired by sites like themoonlight.io, but kept simple and private.
    unset ANTHROPIC_API_KEY
    claude -p "say hi"
    ```
+   Hermes: install it from https://hermes-agent.nousresearch.com/docs/ and run `hermes setup`
+   to pick a Provider and model. Paper Reader never changes your Hermes settings.
 2. **Python 3.10+**. Either use **uv** (recommended) or plain `python3` + pip:
    ```bash
    # Option A — uv (installs Python for you if needed)
@@ -90,22 +92,35 @@ You can still **Upload PDF** from the top bar for one-off files.
 ## Use
 
 1. Pick a paper from the **Library**, or **Upload PDF**.
-2. **Model** (top right): Haiku 5.5 (fast, default) · Sonnet · Opus (best) · Haiku 4.5.
-   Switching re-generates results under the new model.
+2. **AI** badge (top right): choose the AI Backend and a model per task (see
+   *AI settings*). Saving reloads the page; results are cached per backend and model.
 3. **Summary** tab → *Generate summary*.
 4. **Translation** tab → pick a language (default Korean); it translates the page
    shown on the left and follows you as you page through.
 5. **Chat** tab → ask questions about the paper.
 
-Results are cached per paper **and per model** under `data/`, so reopening is instant
+Results are cached per paper **and per AI Backend and model** under `data/`, so reopening is instant
 and doesn't re-spend usage. Text-based PDFs only (scanned images need OCR — not yet).
+
+## AI settings
+
+Click the **AI** badge in the top bar to choose the AI Backend (Claude Code or Hermes), a model
+for each task, and how many translation requests run at once (default 8). Saving sends one short
+test request per model and refuses models your account cannot use. Settings are stored in
+`data/settings.json`. `PAPER_READER_BACKEND=claude|hermes` overrides the saved choice for one run.
+
+On first launch, if only one of the tools is installed, Paper Reader picks it after a successful
+test request. If both are installed, the settings dialog opens. If neither is, PDFs still open and
+AI features stay off.
 
 ## Layout
 
 ```
 app/
   main.py        FastAPI routes + static serving + library/open/pdf endpoints
-  claude.py      the only module that calls Claude (subscription CLI); model control
+  ai.py          every prompt; picks the model for each task from settings
+  settings.py    AI Backend, model per task, concurrency (data/settings.json)
+  backends/      one module per AI Backend (claude.py, hermes.py); only place AI runs
   pdf_utils.py   PyMuPDF text extraction
   store.py       local PDF + result cache
 web/             static reader UI (pdf.js + marked, no build step)
@@ -115,6 +130,7 @@ data/            runtime cache (gitignored)
 
 ## Config
 
-- Default model: `DEFAULT_MODEL` in `app/claude.py`.
+- AI Backend and models: the **AI** badge, stored in `data/settings.json`; defaults in
+  `DEFAULT_MODELS` in `app/settings.py`.
 - Default translation language: the `<select>` in `web/index.html`.
 - Papers folder: `PAPERS_DIR` env var (default `./papers`).

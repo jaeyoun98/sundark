@@ -16,6 +16,7 @@ DATA = Path(__file__).resolve().parent.parent / "data"
 PDFS = DATA / "pdfs"
 DOCS = DATA / "docs"
 CACHE = DATA / "cache"
+CHATS = DATA / "chats"
 
 for _d in (PDFS, DOCS, CACHE):
     _d.mkdir(parents=True, exist_ok=True)
@@ -57,3 +58,23 @@ def cache_put(doc_id: str, key: str, value: dict) -> None:
     (d / f"{key}.json").write_text(
         json.dumps(value, ensure_ascii=False), encoding="utf-8"
     )
+
+
+def chat_get(doc_id: str) -> list[dict]:
+    p = CHATS / f"{doc_id}.json"
+    try:
+        turns = json.loads(p.read_text("utf-8"))
+    except (OSError, ValueError):
+        return []
+    return turns if isinstance(turns, list) else []
+
+
+def chat_put(doc_id: str, turns: list[dict]) -> None:
+    CHATS.mkdir(parents=True, exist_ok=True)
+    (CHATS / f"{doc_id}.json").write_text(
+        json.dumps(turns, ensure_ascii=False), "utf-8"
+    )
+
+
+def chat_clear(doc_id: str) -> None:
+    (CHATS / f"{doc_id}.json").unlink(missing_ok=True)

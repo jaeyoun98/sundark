@@ -7,16 +7,13 @@ project working. Keep changes surgical and in the existing style.
 
 A personal, local web app that reads conference/journal PDFs and provides
 whole-document translation, a grounded "Research Anatomy", an auto summary, and
-paper-aware Q&A chat. It runs the user's **Claude Code subscription** — not a
-billable API key.
+paper-aware Q&A chat. It runs through the user's own subscription in the chosen AI
+Backend (Claude Code or Hermes) — never a billable API key.
 
 ## Architecture and boundaries
 
-- **`app/claude.py` is the only module that talks to Claude.** It shells out to
-  the logged-in `claude` CLI (subscription auth). It deliberately strips
-  `ANTHROPIC_API_KEY` from the subprocess env. To make this a public/multi-user
-  service, replace **only this file** with the billable Claude API; do not spread
-  Claude calls into other modules.
+- **Only `app/backends/` starts AI processes**; `app/ai.py` owns every prompt. See
+  *AI Backends* below.
 - **`app/pdf_utils.py`** turns a PDF page into word geometry + sentences:
   `get_text("dict")` for per-word position/size, margin filtering, region drop/
   heading/equation typing from the layout model's boxes (no font/stroke heuristics —
@@ -71,8 +68,29 @@ uv sync
 uv run uvicorn app.main:app --host 127.0.0.1 --port 8743
 ```
 
-Requires the `claude` CLI logged in with a subscription (`claude`, then sign in).
-Verify once: `claude -p "hi"` answers with `ANTHROPIC_API_KEY` unset.
+Requires Claude Code (`claude`, signed in) or Hermes (`hermes setup`). Pick one in the
+**AI** badge; `PAPER_READER_BACKEND=claude|hermes` overrides it for one run.
+
+## AI Backends
+
+- `app/ai.py` builds every prompt and picks the Model for each Task from `app/settings.py`.
+  Nothing outside `app/backends/` starts an AI process.
+- Requests that carry PDF text or images run with every agent tool disabled (ADR 0002).
+  Equation images go inline in the message; never enable a file-read tool for them.
+- Never read or pass an API key. The Claude Code env drops `ANTHROPIC_API_KEY`; Hermes keeps the
+  user's Provider untouched.
+- Errors shown to users come from `app/errors.py`; never put stderr or provider bodies in them.
+
+### Adding an AI Backend (OpenClaw is next)
+
+1. Add `app/backends/<name>.py` exposing `NAME`, `LABEL`, `MODEL_SUGGESTIONS`, `installed()`,
+   `describe()`, `async run(prompt, *, model, system=None, images=())`, and
+   `stream(prompt, *, model, system=None)`.
+2. Disable every tool in that transport and send images inline.
+3. Map its errors with `app.errors.from_text` so rate limits become `RateLimitError`.
+4. Register it in `app/backends/__init__.py` and add its name and default Models to
+   `app/settings.py` (`BACKEND_NAMES`, `DEFAULT_MODELS`).
+5. Add `tests/test_backend_<name>.py` mirroring `tests/test_backend_hermes.py`.
 
 ## Behavior notes (so you don't "fix" them by mistake)
 
@@ -81,27 +99,28 @@ Verify once: `claude -p "hi"` answers with `ANTHROPIC_API_KEY` unset.
   segments by paragraph (coalescing tiny ones to a minimum size so a lone heading does not
   cost its own call). `translateAll()` (in `web/app.js`) runs a producer that walks pages
   in order — laying each out, building its empty DOM (`preparePage`), and enqueuing its
-  batches — while a pool of `TR_POOL` (default 8) workers translates batches concurrently,
+  batches — while a pool of `trPool()` workers (the AI Backend's concurrency setting, default 8) translates batches concurrently,
   so even a single page keeps the pool busy. Display is gated by a sentence-level frontier:
   every result lands in a per-page buffer (`P.trBuf`), and `paintFrontier()` paints only the
   contiguous run of already-buffered sentences from `S.frontier`/`P.frontK`, stopping at the
   first gap — so a later paragraph that finishes first stays buffered and no sentence ever
   appears before an earlier one. A failed batch falls back to the source text for its range
-  so it cannot stall the frontier. The `claude` CLI calls are bounded by the CLI semaphore
-  (`_cli_sem`, 8 in `app/claude.py`) which also covers summary/anatomy; lower `TR_POOL` and
-  the semaphore together if the subscription CLI rate-limits. The server stays generic (it
+  so it cannot stall the frontier. Every AI call is bounded by a per-backend semaphore in `app/ai.py`
+  sized by the same concurrency setting, which also covers summary/anatomy. A rate limit
+  (`RateLimitError`, HTTP 429, or a stream line with `rate_limited`) stops the remaining
+  batches and leaves source text; the user lowers concurrency in Settings if it repeats. The server stays generic (it
   translates whatever segment list it is given and caches by a signature of those segments,
   so each batch caches independently). On open, the loader reveals the UI as soon as the
   FIRST translated sentence is painted (`S.onFirstPaint`) and a few pages of layout are
   buffered (`waitLayout`) — it does not wait for the whole first page or the whole document;
   translation and layout prewarm keep running in the background after the reveal.
-- **Default model is Haiku 5.5** (`claude-haiku-5-5`) — it renders inline math as
-  LaTeX (KaTeX) as well as Sonnet, verified, while being cheaper/faster. Switch to
-  Sonnet/Opus in the UI for the heaviest reasoning. NOTE: the bare `haiku` alias in
-  the CLI still resolves to Haiku 4.5, so the explicit id is used to get 5.5.
+- **Each Task has its own model** (`DEFAULT_MODELS` in `app/settings.py`). Claude Code:
+  `claude-haiku-5-5` for translation, equations, and the glossary; `sonnet` for the rest.
+  Hermes: `gpt-6-luna` and `gpt-6.1-sol` the same way. NOTE: the bare `haiku` alias in
+  the Claude CLI still resolves to Haiku 4.5, so the explicit id is used to get 5.5.
 - **A per-paper translation glossary ("brief") is injected into every page.**
   `translate_brief()` reads just the front matter (`brief_source()`: title +
-  abstract + intro) on a cheap/fast model (Haiku) and returns the paper's field,
+  abstract + intro) on the glossary Task's fast model and returns the paper's field,
   defined abbreviations, and key terms with a preferred target-language rendering.
   It is generated once on the first page's translation, cached as `brief_<lang>`,
   and prepended (as reference, not content) to each page so terminology stays
@@ -109,11 +128,10 @@ Verify once: `claude -p "hi"` answers with `ANTHROPIC_API_KEY` unset.
   Keep the brief model cheap and the source short — it must not slow translation.
 - **Display equations are re-read from the image.** The PDF text layer scrambles 2D
   math, so `/api/math` crops each equation region (`pdf_utils.crop_region_png`) and
-  a vision call (`claude.equation_latex`, Haiku) transcribes it to clean LaTeX; the
-  translation panel then swaps the scrambled text for `\[ ... \]`. The crop is our
-  own render (trusted), read via the Read tool scoped with `--add-dir`. It is
-  awaited inline after each page's translation so the `claude` CLI is never called
-  concurrently. Cached per page/model; best-effort (keeps the original text on
+  a vision call (`ai.equation_latex`) transcribes it to clean LaTeX; the translation
+  panel then swaps the scrambled text for `\[ ... \]`. The PNG goes inline in the
+  message with every tool disabled (ADR 0002) — never enable a file-read tool for it.
+  Cached per page/backend/model; best-effort (keeps the original text on
   failure). A line is a display-equation line only when its center is inside a model
   `formula` box; consecutive such lines (one box spans the whole equation) group into
   one segment, which gives a whole-equation crop.
