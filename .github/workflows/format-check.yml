@@ -27,7 +27,7 @@ jobs:
         run: pip install ruff
 
       - name: Check formatting
-        run: ruff format --check . && ruff check I .
+        run: ruff format --check . && ruff check .
 
       - name: Install project dependencies
         run: |
