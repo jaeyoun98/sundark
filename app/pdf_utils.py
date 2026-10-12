@@ -18,7 +18,7 @@ def extract(pdf_bytes: bytes) -> dict:
     """
     doc = pymupdf.open(stream=pdf_bytes, filetype="pdf")
     try:
-        pages = [page.get_text("text") for page in doc]
+        pages = [_page_text(page) for page in doc]
         title = _title_from_fonts(doc[0]) if doc.page_count else ""
         if not title:
             meta = doc.metadata or {}
@@ -28,6 +28,7 @@ def extract(pdf_bytes: bytes) -> dict:
             "meta": {
                 "title": title or "Untitled paper",
                 "num_pages": len(pages),
+                "text_version": TEXT_VERSION,
             },
         }
     finally:
@@ -171,6 +172,69 @@ _ENUM_ABBR = re.compile(
 # them — otherwise they leak into a sentence as a fragment like "0 , σ 2 I \x01".
 _CTRL_STRIP = {c: None for c in range(0x20) if c not in (0x09, 0x0A, 0x0D)}
 _CTRL_STRIP[0x7F] = None
+
+# AIP/APS journals (1990s-2000s) set math in "Universal-GreekwithMathPi", whose text layer
+# reuses ASCII codes for the glyphs it draws: "~1!" is "(1)", "D" is "Δ". Read off rendered
+# glyphs in real PDFs; codes not seen there stay as they are rather than being guessed.
+_MATHPI_FONT = "Universal-GreekwithMath"
+_MATHPI = str.maketrans(
+    {
+        "~": "(",
+        "!": ")",
+        "@": "[",
+        "#": "]",
+        "^": "⟨",
+        "&": "⟩",
+        "<": "≤",
+        ">": "≥",
+        "`": "∞",
+        ";": "∼",
+        "a": "α",
+        "d": "δ",
+        "e": "ϵ",
+        "«": "ε",
+        "f": "φ",
+        "g": "γ",
+        "h": "η",
+        "j": "ξ",
+        "l": "λ",
+        "m": "μ",
+        "r": "ρ",
+        "s": "σ",
+        "t": "τ",
+        "u": "θ",
+        "w": "ϕ",
+        "x": "χ",
+        "z": "ζ",
+        "C": "Ψ",
+        "D": "Δ",
+        "F": "Φ",
+        "S": "Σ",
+        "V": "Ω",
+    }
+)
+
+# Bump when extract() changes what it returns, so stored docs are re-extracted on next open.
+TEXT_VERSION = 2
+
+
+def _decode_span(span: dict) -> str:
+    """A span's text with the MathPi font's borrowed ASCII codes mapped to what it draws."""
+    text = span.get("text", "")
+    return text.translate(_MATHPI) if _MATHPI_FONT in span.get("font", "") else text
+
+
+def _page_text(page) -> str:
+    """Plain page text; pages using the MathPi font are rebuilt from decoded spans."""
+    if not any(_MATHPI_FONT in f[3] for f in page.get_fonts()):
+        return page.get_text("text")
+    lines = []
+    for block in page.get_text("dict").get("blocks", []):
+        if block.get("type") != 0:
+            continue
+        for line in block.get("lines", []):
+            lines.append("".join(_decode_span(sp) for sp in line.get("spans", [])))
+    return "".join(line + "\n" for line in lines)
 
 
 def _split_on_bullets(raw: list[tuple[int, int]], text: str) -> list[tuple[int, int]]:
@@ -376,7 +440,7 @@ def _words_with_style(page) -> list[dict]:
             continue
         for lno, line in enumerate(block.get("lines", [])):
             for span in line.get("spans", []):
-                stext = span.get("text", "")
+                stext = _decode_span(span)
                 if not stext.strip():
                     continue
                 size = span.get("size", 0.0)
@@ -632,6 +696,32 @@ def layout(
     return core
 
 
+def _joins_line(prev: dict, nxt: dict) -> bool:
+    """True when `nxt` continues the same visual line as `prev` (both are line dicts with
+    left/right/top/bottom/size/h/cy). Fragments on one baseline separated by a small gap join.
+    So does a narrow glyph fragment that touches `prev` and overlaps it vertically: a radical,
+    integral, or large operator is drawn well above or below the baseline, so its center sits
+    too far from the line's to pass the baseline test (e.g. "O(" then a raised "√" in "O(√d)").
+    The width guard keeps a two-column row apart; its halves are wide and far apart."""
+    size = prev["size"] or nxt["size"] or 10
+    gap = nxt["left"] - prev["right"]
+    if not -size <= gap <= size * 1.8:
+        return False
+    if abs(nxt["cy"] - prev["cy"]) <= max(prev["h"], nxt["h"]) * 0.6:
+        return True
+    narrow = nxt["right"] - nxt["left"] <= size * 1.5
+    touching = abs(gap) <= size * 0.5
+    overlap = min(prev["bottom"], nxt["bottom"]) - max(prev["top"], nxt["top"]) > 0
+    return narrow and touching and overlap
+
+
+def _line_gap(upper: dict, lower: dict) -> float:
+    """Vertical gap between two lines, measured on their typical glyphs (median top/bottom of
+    the words) so one raised or lowered glyph — a radical, integral, or large operator — does
+    not make adjacent lines look overlapping and break the paragraph between them."""
+    return statistics.median(lower["y0"]) - statistics.median(upper["y1"])
+
+
 def _page_layout(
     pdf_bytes: bytes,
     page_index: int,
@@ -765,7 +855,8 @@ def _page_layout(
                 min(ln["x0"]),
             )
             ln["h"] = ln["bottom"] - ln["top"]
-            ln["cx"] = (min(ln["x0"]) + max(words[g]["x1"] for g in ln["widx"])) / 2
+            ln["right"] = max(words[g]["x1"] for g in ln["widx"])
+            ln["cx"] = (min(ln["x0"]) + ln["right"]) / 2
             ln["cy"] = (ln["top"] + ln["bottom"]) / 2
             # A line is a display-equation line when its center is inside a model formula box.
             # Consecutive such lines (one box spans the whole equation) group into one segment.
@@ -790,7 +881,8 @@ def _page_layout(
                 min(ln["x0"]),
             )
             ln["h"] = ln["bottom"] - ln["top"]
-            ln["cx"] = (min(ln["x0"]) + _lright(ln)) / 2
+            ln["right"] = _lright(ln)
+            ln["cx"] = (min(ln["x0"]) + ln["right"]) / 2
             ln["cy"] = (ln["top"] + ln["bottom"]) / 2
             ln["math"] = _in_rects(ln["cx"], ln["cy"], formula_rects)
 
@@ -798,12 +890,7 @@ def _page_layout(
         for ln in lines:
             if merged_lines:
                 prev = merged_lines[-1]
-                size = prev["size"] or ln["size"] or 10
-                gap = ln["left"] - _lright(prev)
-                same_baseline = (
-                    abs(ln["cy"] - prev["cy"]) <= max(prev["h"], ln["h"]) * 0.6
-                )
-                if same_baseline and -size <= gap <= size * 1.8:
+                if _joins_line(prev, ln):
                     prev["widx"].extend(ln["widx"])
                     prev["sizes"].extend(ln["sizes"])
                     prev["y0"].extend(ln["y0"])
@@ -908,7 +995,7 @@ def _page_layout(
                 if ln["key"][0] == prev["key"][0]:  # same block
                     cont = True
                 elif not prev_ended:
-                    gap = ln["top"] - prev["bottom"]
+                    gap = _line_gap(prev, ln)
                     same_col = (
                         abs(ln["left"] - prev["left"]) < 40
                         and -5 <= gap <= prev["h"] * 2.2

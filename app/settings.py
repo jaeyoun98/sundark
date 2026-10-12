@@ -101,6 +101,13 @@ def save(backend: str, models: dict[str, str], concurrency: int) -> None:
     }
     raw["models"][backend] = {**current["models"][backend], **models}
     raw["concurrency"][backend] = concurrency
+    # Keep only choices that differ from the defaults, so a later change to a default
+    # reaches users who never picked that model themselves.
+    pinned = {
+        name: {t: m for t, m in chosen.items() if m != DEFAULT_MODELS[name][t]}
+        for name, chosen in raw["models"].items()
+    }
+    raw["models"] = {name: chosen for name, chosen in pinned.items() if chosen}
     path = settings_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.NamedTemporaryFile(

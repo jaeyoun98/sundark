@@ -17,7 +17,7 @@ from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import ai, backends, layout_model, pdf_utils, settings, store
+from . import ai, backends, biblio, layout_model, paper_id, pdf_utils, settings, store
 from .errors import AIError, RateLimitError
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -62,43 +62,119 @@ async def _warm_layout_model() -> None:
     )
 
 
-def _ingest(data: bytes) -> dict:
-    """Store + extract a PDF (idempotent by content hash). Returns summary meta."""
+async def _ingest(data: bytes, zotero: dict | None = None) -> dict:
+    """Store + extract a PDF (idempotent by content hash), then identify its Paper.
+    Returns summary meta. `zotero` = {"key", "doi"} when opened from Zotero."""
     doc_id = store.doc_id_for(data)
     extracted = store.load_doc(doc_id)
     if extracted is None:
         extracted = pdf_utils.extract(data)  # may raise; caller converts to HTTP error
         store.save_pdf(doc_id, data)
         store.save_doc(doc_id, extracted)
+    elif extracted["meta"].get("text_version", 1) < pdf_utils.TEXT_VERSION:
+        # Re-extract text a previous version got wrong (e.g. MathPi "~1!"), keeping identity.
+        fresh = pdf_utils.extract(data)
+        fresh["meta"]["paper_id"] = extracted["meta"].get("paper_id")
+        if fresh["meta"]["paper_id"] is None:
+            del fresh["meta"]["paper_id"]
+        extracted = fresh
+        store.save_doc(doc_id, extracted)
+    pid = extracted["meta"].get("paper_id")
+    unresolved = (
+        pid and pid.split(":")[0] in ("doi", "arxiv") and store.paper_get(pid) is None
+    )
+    if pid is None or zotero or unresolved:
+        pid = await _identify(doc_id, data, extracted, zotero or {})
+    record = store.paper_get(pid)
     return {
         "doc_id": doc_id,
-        "title": extracted["meta"]["title"],
+        "paper_id": pid,
+        "title": (record or {}).get("title") or extracted["meta"]["title"],
+        "byline": biblio.byline(record),
         "num_pages": extracted["meta"]["num_pages"],
     }
 
 
+async def _identify(doc_id: str, data: bytes, extracted: dict, zotero: dict) -> str:
+    """Pick the Paper ID (ADR 0001) and fetch its Bibliographic Record when possible.
+
+    Candidates in priority order: Zotero's DOI (trusted), the PDF's DOI, the PDF's arXiv ID.
+    A candidate whose record title is not on the first page names another work (e.g. a
+    citation), so the next candidate is tried; this check also runs on cached records.
+    Without a record (offline, unknown ID) the candidate is kept and re-checked next open."""
+    found = paper_id.identifiers(data)
+    first_page = extracted["pages"][0] if extracted["pages"] else ""
+    candidates = []
+    if zotero.get("doi"):
+        candidates.append(
+            (paper_id.paper_id(fingerprint=doc_id, doi=zotero["doi"]), True)
+        )
+    if found["doi"]:
+        candidates.append(
+            (paper_id.paper_id(fingerprint=doc_id, doi=found["doi"]), False)
+        )
+    if found["arxiv"]:
+        candidates.append(
+            (paper_id.paper_id(fingerprint=doc_id, arxiv=found["arxiv"]), False)
+        )
+    pid = paper_id.paper_id(fingerprint=doc_id, zotero_key=zotero.get("key"))
+    for candidate, trusted in candidates:
+        cached = store.paper_get(candidate)
+        record = cached or await biblio.lookup(candidate)
+        if record is None:
+            pid = candidate
+            break
+        if trusted or biblio.title_matches(record["title"], first_page):
+            if cached is None:
+                store.paper_put(candidate, record)
+            pid = candidate
+            break
+    previous = extracted["meta"].get("paper_id") or f"file:{doc_id}"
+    extracted["meta"]["paper_id"] = pid
+    store.save_doc(doc_id, extracted)
+    store.chat_migrate(doc_id, pid)
+    store.chat_move(previous, pid)
+    return pid
+
+
+def _paper_of(doc_id: str, doc: dict) -> str:
+    """Paper ID for a stored doc; docs ingested before Paper IDs use their fingerprint."""
+    pid = doc["meta"].get("paper_id") or f"file:{doc_id}"
+    store.chat_migrate(doc_id, pid)
+    return pid
+
+
 _TITLES_FILE = store.DATA / "titles.json"
 try:
-    _titles: dict[str, str] = json.loads(_TITLES_FILE.read_text("utf-8"))
+    _titles: dict[str, dict] = json.loads(_TITLES_FILE.read_text("utf-8"))
 except Exception:  # noqa: BLE001
     _titles = {}
 
 
 def _paper_title(path: Path, rel: str) -> str:
+    """Library title: a Bibliographic Record only for papers already opened (their Paper ID
+    was validated then); otherwise the title read from the PDF. Never calls the network."""
     st = path.stat()
     key = f"{rel}:{int(st.st_mtime)}:{st.st_size}"
-    if key in _titles:
-        return _titles[key]
-    try:
-        title = pdf_utils.title_of(path.read_bytes())
-    except Exception:  # noqa: BLE001
-        title = ""
-    _titles[key] = title
-    try:
-        _TITLES_FILE.write_text(json.dumps(_titles, ensure_ascii=False), "utf-8")
-    except OSError:
-        pass  # non-fatal: title cache is best-effort
-    return title
+    entry = _titles.get(key)
+    if not (isinstance(entry, dict) and "doc_id" in entry):  # missing or older format
+        try:
+            data = path.read_bytes()
+            entry = {
+                "title": pdf_utils.title_of(data),
+                "doc_id": store.doc_id_for(data),
+            }
+        except Exception:  # noqa: BLE001
+            entry = {"title": "", "doc_id": None}
+        _titles[key] = entry
+        try:
+            _TITLES_FILE.write_text(json.dumps(_titles, ensure_ascii=False), "utf-8")
+        except OSError:
+            pass  # non-fatal: title cache is best-effort
+    doc = store.load_doc(entry["doc_id"]) if entry["doc_id"] else None
+    pid = (doc or {}).get("meta", {}).get("paper_id")
+    record = store.paper_get(pid) if pid else None
+    return (record or {}).get("title") or entry["title"]
 
 
 @app.get("/api/papers")
@@ -135,7 +211,7 @@ async def open_paper(req: OpenReq):
     if not path.is_file() or path.suffix.lower() != ".pdf":
         raise HTTPException(404, "Paper not found")
     try:
-        return _schedule_prewarm(_ingest(path.read_bytes()))
+        return _schedule_prewarm(await _ingest(path.read_bytes()))
     except Exception as e:
         raise HTTPException(400, f"Could not read PDF: {e}") from e
 
@@ -153,8 +229,10 @@ _layout_lock = asyncio.Lock()
 # fragments from spaced inline math. A hybrid-heading attempt was tried and reverted — it hurt
 # precision on the .tex eval — so heading detection stays pure title-box. v5: strip C0/DEL control
 # characters (PDF math bracket delimiters) from word tokens. v6: rejoin same-baseline line
-# fragments the PDF split around inline math.)
-_LAYOUT_VERSION = 6
+# fragments the PDF split around inline math. v7: also rejoin a raised/lowered glyph fragment
+# such as a radical, and measure line gaps on median glyph extents. v8: decode the AIP/APS
+# MathPi font, whose text layer reads "~1!" for "(1)".)
+_LAYOUT_VERSION = 8
 
 
 def _page_layout_cached(doc_id: str, page: int) -> dict:
@@ -304,7 +382,7 @@ async def upload(file: UploadFile):
     if not data:
         raise HTTPException(400, "Empty file")
     try:
-        return _schedule_prewarm(_ingest(data))
+        return _schedule_prewarm(await _ingest(data))
     except Exception as e:
         raise HTTPException(400, f"Could not read PDF: {e}") from e
 
@@ -511,12 +589,13 @@ class ChatReq(BaseModel):
 @app.post("/api/chat")
 async def chat(req: ChatReq):
     doc = _require_doc(req.doc_id)
-    history = store.chat_get(req.doc_id)
+    pid = _paper_of(req.doc_id, doc)
+    history = store.chat_get(pid)
     answer = await ai.chat(
         req.question, paper_text=pdf_utils.full_text(doc["pages"]), history=history
     )
     store.chat_put(
-        req.doc_id,
+        pid,
         history
         + [
             {"role": "user", "text": req.question},
@@ -528,12 +607,12 @@ async def chat(req: ChatReq):
 
 @app.get("/api/chat/{doc_id}")
 async def chat_history(doc_id: str):
-    return {"turns": store.chat_get(doc_id)}
+    return {"turns": store.chat_get(_paper_of(doc_id, _require_doc(doc_id)))}
 
 
 @app.post("/api/chat/{doc_id}/reset")
 async def chat_reset(doc_id: str):
-    store.chat_clear(doc_id)
+    store.chat_clear(_paper_of(doc_id, _require_doc(doc_id)))
     return {"ok": True}
 
 
@@ -549,7 +628,8 @@ async def _get_brief(doc_id: str, doc: dict, target_lang: str) -> str:
     cached, then injected into every page's translation for cross-page term consistency.
     Best-effort: if generation fails, translation proceeds without it."""
     key = f"brief_{target_lang}_{ai.cache_tag('brief')}"
-    cached = store.cache_get(doc_id, key)
+    cache_id = store.paper_cache_id(_paper_of(doc_id, doc))
+    cached = store.cache_get(cache_id, key)
     if cached is not None:
         return cached.get("brief", "")
     try:
@@ -559,7 +639,7 @@ async def _get_brief(doc_id: str, doc: dict, target_lang: str) -> str:
         raise
     except Exception:  # noqa: BLE001
         return ""  # non-fatal: a missing glossary just means no extra consistency hint
-    store.cache_put(doc_id, key, {"brief": brief})
+    store.cache_put(cache_id, key, {"brief": brief})
     return brief
 
 

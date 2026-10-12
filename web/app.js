@@ -145,7 +145,7 @@ $("file").addEventListener("change", async (e) => {
 async function openDoc(meta) {
   S.docId = meta.doc_id;
   S.numPages = meta.num_pages;
-  setTitle(meta.title + "  ·  " + meta.num_pages + " pages");
+  setTitle(meta.title + (meta.byline ? "  ·  " + meta.byline : "") + "  ·  " + meta.num_pages + " pages");
 
   // Cover the whole workspace with the loading screen the instant the paper is opened, before
   // any await, so the PDF never flashes into view before it is ready. The warm-up below keeps it
@@ -686,6 +686,19 @@ $("tr-smaller").addEventListener("click", () => bumpTrScale(-0.1));
 $("tr-bigger").addEventListener("click", () => bumpTrScale(0.1));
 applyTrScale();
 
+// Markdown -> HTML without breaking LaTeX. marked treats "\(" as an escaped "(" and "_x_" as
+// emphasis, which destroys math before KaTeX sees it. Shield math spans with placeholders,
+// run marked, then put the math back (HTML-escaped) for renderMath() to typeset.
+function mdMath(text) {
+  const spans = [];
+  const shielded = (text || "").replace(/\\\[[\s\S]+?\\\]|\\\([\s\S]+?\\\)|\$\$[\s\S]+?\$\$/g, (m) => {
+    spans.push(m);
+    return "@@MATH" + (spans.length - 1) + "@@";
+  });
+  const escape = (s) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  return marked.parse(shielded).replace(/@@MATH(\d+)@@/g, (_, k) => escape(spans[Number(k)]));
+}
+
 function renderMath(el) {
   if (!window.renderMathInElement) return;
   try {
@@ -831,7 +844,8 @@ async function genSummary() {
   $("summary").innerHTML = '<p class="loading">Summarizing… (first run can take a bit)</p>';
   try {
     const r = await postJSON("/api/summarize", { doc_id: S.docId });
-    $("summary").innerHTML = marked.parse(r.summary);
+    $("summary").innerHTML = mdMath(r.summary);
+    renderMath($("summary"));
   } catch (err) {
     S.summaryLoaded = false;
     $("summary").innerHTML = '<p class="loading">Error: ' + err.message + "</p>";
@@ -845,7 +859,7 @@ async function loadChat() {
     const r = await (await fetch(`/api/chat/${S.docId}`)).json();
     for (const t of r.turns) {
       const div = addMsg(t.role === "user" ? "user" : "bot", t.text);
-      if (t.role !== "user") { div.innerHTML = marked.parse(t.text); renderMath(div); }
+      if (t.role !== "user") { div.innerHTML = mdMath(t.text); renderMath(div); }
     }
   } catch { /* empty chat on failure */ }
 }
@@ -886,7 +900,7 @@ $("chatform").addEventListener("submit", async (e) => {
     : q;
   try {
     const r = await postJSON("/api/chat", { doc_id: S.docId, question });
-    bot.innerHTML = marked.parse(r.answer);
+    bot.innerHTML = mdMath(r.answer);
     renderMath(bot);
   } catch (err) { bot.textContent = "Error: " + err.message; }
   $("chatlog").scrollTop = $("chatlog").scrollHeight;

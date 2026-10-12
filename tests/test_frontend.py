@@ -23,3 +23,16 @@ class FrontendTests(unittest.TestCase):
 
     def test_rate_limit_drains_queued_batches_with_source(self):
         self.node("tests/frontend_ratelimit_queue.test.js")
+
+    def test_markdown_keeps_latex_for_katex(self):
+        self.node("tests/frontend_markdown_math.test.js")
+
+    def test_copying_math_yields_latex(self):
+        # KaTeX's copy-tex makes a copied formula paste as its LaTeX source instead of the
+        # hidden MathML plus one line per glyph; it must match the loaded KaTeX version.
+        html = (ROOT / "web" / "index.html").read_text(encoding="utf-8")
+        import re
+
+        versions = set(re.findall(r"KaTeX/([\d.]+)/", html))
+        self.assertEqual(len(versions), 1, versions)
+        self.assertIn(f"KaTeX/{versions.pop()}/contrib/copy-tex.min.js", html)
