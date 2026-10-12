@@ -106,6 +106,13 @@ def chat_clear(pid: str) -> None:
     (CHATS / f"{_key(pid)}.json").unlink(missing_ok=True)
 
 
+def chat_move(old_pid: str, new_pid: str) -> None:
+    """Carry a Paper's chat over when its Paper ID changes, never overwriting."""
+    old, new = CHATS / f"{_key(old_pid)}.json", CHATS / f"{_key(new_pid)}.json"
+    if old.exists() and old != new and not new.exists():
+        old.replace(new)
+
+
 def chat_migrate(doc_id: str, pid: str) -> None:
     """Move a chat saved per doc_id (before Paper IDs) to its Paper, never overwriting."""
     old = CHATS / f"{doc_id}.json"

@@ -129,3 +129,70 @@ class PaperApiTests(unittest.TestCase):
         ):
             meta = self.upload(make_pdf(["A paper with no identifiers at all"]))
         self.assertEqual(meta["paper_id"], f"file:{meta['doc_id']}")
+
+    def test_cached_record_of_a_cited_doi_is_not_inherited(self):
+        with patch("app.main.biblio.lookup", new=AsyncMock(return_value=RECORD)):
+            self.upload(make_pdf([PAGE]))  # paper P: its record is now cached
+        citing = "A Different Preprint About Hard Disks\nWe build on [1].\n[1] DOI: 10.1103/PhysRevLett.114.035702"
+        with patch("app.main.biblio.lookup", new=AsyncMock(return_value=RECORD)):
+            q = self.upload(make_pdf([citing]))
+        self.assertEqual(q["paper_id"], f"file:{q['doc_id']}")
+        self.assertNotEqual(q["title"], TITLE)
+        self.assertEqual(q["byline"], "")
+
+    def test_rejected_doi_falls_back_to_the_arxiv_id(self):
+        page = "arXiv:2506.09762v2 [stat.CO]\nOur Own Preprint Title\n[1] DOI: 10.1103/PhysRevLett.114.035702"
+
+        async def lookup(pid):
+            return (
+                RECORD
+                if pid.startswith("doi:")
+                else {
+                    "title": "Our Own Preprint Title",
+                    "authors": ["A B"],
+                    "year": 2025,
+                    "source": "arxiv",
+                }
+            )
+
+        with patch("app.main.biblio.lookup", new=lookup):
+            meta = self.upload(make_pdf([page]))
+        self.assertEqual(meta["paper_id"], "arxiv:2506.09762")
+
+    def test_chat_read_before_identification_follows_the_paper(self):
+        pdf = make_pdf([PAGE])
+        with patch("app.main.biblio.lookup", new=AsyncMock(return_value=RECORD)):
+            meta = self.upload(pdf)
+        doc = store.load_doc(meta["doc_id"])
+        del doc["meta"]["paper_id"]  # ingested before Paper IDs existed
+        store.save_doc(meta["doc_id"], doc)
+        store.chat_clear(meta["paper_id"])
+        (self.root / "chats").mkdir(exist_ok=True)
+        (self.root / "chats" / f"{meta['doc_id']}.json").write_text(
+            json.dumps([{"role": "user", "text": "legacy"}]), "utf-8"
+        )
+        self.client.get(f"/api/chat/{meta['doc_id']}")  # an old open tab asks first
+        with patch("app.main.biblio.lookup", new=AsyncMock(return_value=RECORD)):
+            again = self.upload(pdf)
+        self.assertEqual(again["paper_id"], "doi:10.1103/physrevlett.114.035702")
+        turns = self.client.get(f"/api/chat/{meta['doc_id']}").json()["turns"]
+        self.assertEqual(turns, [{"role": "user", "text": "legacy"}])
+
+    def test_library_title_never_comes_from_an_unvalidated_doi(self):
+        with patch("app.main.biblio.lookup", new=AsyncMock(return_value=RECORD)):
+            self.upload(make_pdf([PAGE]))
+        citing = make_pdf(
+            ["Citing Paper Own Title\n[1] DOI: 10.1103/PhysRevLett.114.035702"]
+        )
+        lib = self.root / "lib"
+        lib.mkdir()
+        (lib / "q.pdf").write_bytes(citing)
+        with (
+            patch.object(main, "PAPERS_DIR", lib),
+            patch.object(main, "_titles", {}),
+            patch.object(main, "_TITLES_FILE", self.root / "titles.json"),
+            patch("app.main.biblio.lookup", new=AsyncMock(return_value=RECORD)),
+        ):
+            self.upload(citing)  # opening it validates and rejects the cited DOI
+            names = [p["name"] for p in self.client.get("/api/papers").json()["papers"]]
+        self.assertNotIn(TITLE, names)

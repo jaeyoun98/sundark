@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+import unicodedata
 import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
@@ -70,23 +71,33 @@ async def lookup(pid: str) -> dict | None:
         return None
     try:
         record = await asyncio.to_thread(fetch, value)
-    except (OSError, ValueError, KeyError, IndexError, TypeError, ET.ParseError):
+    except Exception:  # noqa: BLE001 — best-effort: any failure means "no record yet"
         return None
     return record if record["title"] else None
 
 
+def _norm(text: str) -> str:
+    # NFKC folds ligatures (ﬁ, ﬀ, ﬃ) and full-width forms the PDF text layer often keeps.
+    return unicodedata.normalize("NFKC", text or "").lower()
+
+
 def _words(text: str) -> list[str]:
-    return [w for w in re.findall(r"[a-z0-9]+", (text or "").lower()) if len(w) > 2]
+    return [
+        w for w in re.findall(r"\w+", _norm(text)) if len(w) > (2 if w.isascii() else 1)
+    ]
 
 
 def title_matches(title: str, page_text: str) -> bool:
     """True when most of the record's title words appear on the PDF's first page. A DOI read
-    from the PDF can belong to a cited work; its title will not be on this first page."""
+    from the PDF can belong to a cited work; its title will not be on this first page.
+    Non-Latin words (Korean, CJK) are matched as substrings, since they are not always
+    split by spaces the same way in the PDF text layer."""
     words = _words(title)
     if not words:
         return False
-    page = set(_words(page_text))
-    return sum(w in page for w in words) / len(words) >= 0.6
+    page_words, page = set(_words(page_text)), _norm(page_text)
+    hits = sum(w in page_words or (not w.isascii() and w in page) for w in words)
+    return hits / len(words) >= 0.6
 
 
 def byline(record: dict | None) -> str:

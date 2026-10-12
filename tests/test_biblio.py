@@ -96,3 +96,25 @@ class MatchTests(unittest.TestCase):
             biblio.byline({"authors": ["A B", "C D"], "year": None}), "A B, C D"
         )
         self.assertEqual(biblio.byline(None), "")
+
+    def test_title_matches_korean_and_ligatures(self):
+        self.assertTrue(
+            biblio.title_matches(
+                "고분자 용융체의 상전이 연구",
+                "한국고분자학회지\n고분자 용융체의 상전이 연구\n홍길동",
+            )
+        )
+        self.assertTrue(
+            biblio.title_matches(
+                "Efficient Diffusion Models for Image Classification",
+                "E\ufb03cient Di\ufb00usion Models for Image Classi\ufb01cation",
+            )
+        )
+
+
+class LookupRobustnessTests(unittest.IsolatedAsyncioTestCase):
+    async def test_any_http_failure_is_none(self):
+        import http.client
+
+        with patch("app.biblio._get", side_effect=http.client.IncompleteRead(b"")):
+            self.assertIsNone(await biblio.lookup("doi:10.1/x"))

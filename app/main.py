@@ -88,25 +88,44 @@ async def _ingest(data: bytes, zotero: dict | None = None) -> dict:
 
 
 async def _identify(doc_id: str, data: bytes, extracted: dict, zotero: dict) -> str:
-    """Pick the Paper ID (ADR 0001) and fetch its Bibliographic Record when possible."""
+    """Pick the Paper ID (ADR 0001) and fetch its Bibliographic Record when possible.
+
+    Candidates in priority order: Zotero's DOI (trusted), the PDF's DOI, the PDF's arXiv ID.
+    A candidate whose record title is not on the first page names another work (e.g. a
+    citation), so the next candidate is tried; this check also runs on cached records.
+    Without a record (offline, unknown ID) the candidate is kept and re-checked next open."""
     found = paper_id.identifiers(data)
-    doi = zotero.get("doi") or found["doi"]
-    pid = paper_id.paper_id(
-        fingerprint=doc_id, doi=doi, arxiv=found["arxiv"], zotero_key=zotero.get("key")
-    )
-    if store.paper_get(pid) is None and pid.split(":")[0] in ("doi", "arxiv"):
-        record = await biblio.lookup(pid)
-        first_page = extracted["pages"][0] if extracted["pages"] else ""
-        if record and (
-            zotero.get("doi") or biblio.title_matches(record["title"], first_page)
-        ):
-            store.paper_put(pid, record)
-        elif record:
-            # The identifier read from the PDF names another work (e.g. a citation).
-            pid = paper_id.paper_id(fingerprint=doc_id, zotero_key=zotero.get("key"))
+    first_page = extracted["pages"][0] if extracted["pages"] else ""
+    candidates = []
+    if zotero.get("doi"):
+        candidates.append(
+            (paper_id.paper_id(fingerprint=doc_id, doi=zotero["doi"]), True)
+        )
+    if found["doi"]:
+        candidates.append(
+            (paper_id.paper_id(fingerprint=doc_id, doi=found["doi"]), False)
+        )
+    if found["arxiv"]:
+        candidates.append(
+            (paper_id.paper_id(fingerprint=doc_id, arxiv=found["arxiv"]), False)
+        )
+    pid = paper_id.paper_id(fingerprint=doc_id, zotero_key=zotero.get("key"))
+    for candidate, trusted in candidates:
+        cached = store.paper_get(candidate)
+        record = cached or await biblio.lookup(candidate)
+        if record is None:
+            pid = candidate
+            break
+        if trusted or biblio.title_matches(record["title"], first_page):
+            if cached is None:
+                store.paper_put(candidate, record)
+            pid = candidate
+            break
+    previous = extracted["meta"].get("paper_id") or f"file:{doc_id}"
     extracted["meta"]["paper_id"] = pid
     store.save_doc(doc_id, extracted)
     store.chat_migrate(doc_id, pid)
+    store.chat_move(previous, pid)
     return pid
 
 
@@ -125,29 +144,28 @@ except Exception:  # noqa: BLE001
 
 
 def _paper_title(path: Path, rel: str) -> str:
+    """Library title: a Bibliographic Record only for papers already opened (their Paper ID
+    was validated then); otherwise the title read from the PDF. Never calls the network."""
     st = path.stat()
     key = f"{rel}:{int(st.st_mtime)}:{st.st_size}"
     entry = _titles.get(key)
-    if not isinstance(
-        entry, dict
-    ):  # missing, or a title-only entry from an older version
+    if not (isinstance(entry, dict) and "doc_id" in entry):  # missing or older format
         try:
             data = path.read_bytes()
-            ids = paper_id.identifiers(data)
             entry = {
                 "title": pdf_utils.title_of(data),
-                "paper_id": paper_id.paper_id(
-                    fingerprint=store.doc_id_for(data), **ids
-                ),
+                "doc_id": store.doc_id_for(data),
             }
         except Exception:  # noqa: BLE001
-            entry = {"title": "", "paper_id": None}
+            entry = {"title": "", "doc_id": None}
         _titles[key] = entry
         try:
             _TITLES_FILE.write_text(json.dumps(_titles, ensure_ascii=False), "utf-8")
         except OSError:
             pass  # non-fatal: title cache is best-effort
-    record = store.paper_get(entry["paper_id"]) if entry["paper_id"] else None
+    doc = store.load_doc(entry["doc_id"]) if entry["doc_id"] else None
+    pid = (doc or {}).get("meta", {}).get("paper_id")
+    record = store.paper_get(pid) if pid else None
     return (record or {}).get("title") or entry["title"]
 
 
