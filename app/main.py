@@ -480,14 +480,16 @@ async def anatomy(req: AnatomyReq):
 
 
 # --- Review export -------------------------------------------------------------------------
-# A one-click "memory note": synthesize a Korean review from the materials already gathered for
-# a paper (summary + anatomy + chat), crop only the figures the note references, and hand back a
-# Hugo page bundle (<slug>/index.md + <slug>/<id>.png) as a zip.
+# A one-click review note: write a Korean review from the paper text, guided by the materials
+# already gathered for it (summary + anatomy + chat), crop only the figures the note references,
+# and hand back a Hugo page bundle (<slug>/index.md + <slug>/<id>.png) as a zip.
 
 _SLUG_RE = re.compile(r"[^a-z0-9]+")
 # Markdown image whose target is one of our figure ids, e.g. ![caption](fig-p3-1.png).
 _IMG_REF_RE = re.compile(r"!\[[^\]]*\]\((fig|tbl)-p\d+-\d+\.png\)")
 _IMG_ID_RE = re.compile(r"!\[[^\]]*\]\(((?:fig|tbl)-p\d+-\d+)\.png\)")
+# Math delimiters the review prompt asks for: $$...$$ display, \(...\) inline.
+_TEX_RE = re.compile(r"\$\$|\\\(")
 
 
 def _slug(title: str, fallback: str) -> str:
@@ -594,7 +596,7 @@ async def review_export(doc_id: str):
         anatomy_obj=anat,
         chat_turns=chat_turns,
         figures=[{"id": f["id"], "caption": f["caption"]} for f in figures],
-        front_matter=pdf_utils.brief_source(pages),
+        paper_text=text,
         glossary=glossary,
     )
     body = rv.get("body", "")
@@ -621,11 +623,10 @@ async def review_export(doc_id: str):
     date = datetime.datetime.now(
         datetime.timezone(datetime.timedelta(hours=9))
     ).strftime("%Y-%m-%dT%H:%M:%S+09:00")
+    # The note may carry its own equations even when the paper has no display math.
+    has_math = assets["has_math"] or bool(_TEX_RE.search(body))
     index_md = (
-        _frontmatter(rv, date=date, has_math=assets["has_math"])
-        + "\n"
-        + body.strip()
-        + "\n"
+        _frontmatter(rv, date=date, has_math=has_math) + "\n" + body.strip() + "\n"
     )
     slug = _slug(rv.get("title") or doc["meta"].get("title", ""), doc_id)
 

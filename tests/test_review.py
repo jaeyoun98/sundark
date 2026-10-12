@@ -186,6 +186,22 @@ class ReviewEndpointTests(unittest.TestCase):
         (store.CHATS / "d1.json").write_text(json.dumps(legacy), "utf-8")
         self.assertEqual(self._review_kwargs()["chat_turns"], legacy)
 
+    def test_review_is_written_from_the_paper_text(self):
+        self.assertIn("PAPER TEXT", self._review_kwargs()["paper_text"])
+
+    def test_math_is_on_when_the_note_has_equations(self):
+        catalog = {"figures": [], "has_math": False}
+        with patch("app.main.pdf_utils.figure_catalog", return_value=catalog):
+            for body, flag in (
+                ("손실은 $$L = x$$ 이다.", "true"),
+                ("인라인 \\(x\\) 수식.", "true"),
+                ("수식 없음, 가격은 $5.", "false"),
+            ):
+                md = zipfile.ZipFile(io.BytesIO(self._run(body).content)).read(
+                    "realign-test/index.md"
+                )
+                self.assertIn(f"math: {flag}", md.decode("utf-8"), body)
+
 
 if __name__ == "__main__":
     unittest.main()
