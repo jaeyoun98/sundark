@@ -260,8 +260,13 @@ def _parse_line(line: str) -> tuple[int | None, str]:
 
 
 async def translate_stream(segments: list[str], target_lang: str, brief: str = ""):
-    """Yield (index, translation) per line as the model streams. Mapping by the model's index
-    keeps a dropped or merged line from shifting later segments."""
+    """Yield one translation string per segment, strictly in order, as the model streams.
+
+    Placement is by ARRIVAL ORDER, not by the number the model prints: the caller assigns each
+    yielded string to the next segment. The printed index is used only to VALIDATE order — if it
+    is present and does not match the expected position, or the model emits too many or too few
+    segments, we raise AIError so the caller retries (and finally falls back to source text).
+    This stops a merged/renumbered line from shifting every later segment out of alignment."""
     if not segments:
         return
     numbered = "\n".join(f"{i + 1}. {s}" for i, s in enumerate(segments))
@@ -269,11 +274,23 @@ async def translate_stream(segments: list[str], target_lang: str, brief: str = "
         _brief_block(brief)
         + f"Translate each numbered segment into {target_lang}. Output ONE line per segment "
         f"in the exact form `<index><TAB><translation>` (a real tab between index and text), "
-        f"in the same order, index starting at 1. No JSON, no commentary, no blank lines.\n\n"
+        f"in the same order, index starting at 1, exactly {len(segments)} lines. No JSON, no "
+        f"commentary, no blank lines, and never merge or split segments.\n\n"
         f"{_UNTRUSTED_HEADER}<segments>\n{numbered}\n</segments>"
     )
     name = current_backend()
     buf = ""
+    emitted = 0
+
+    def translation(line: str) -> str:
+        idx, text = _parse_line(line)
+        # idx is the model's 0-based index; None when the line carried no number.
+        if idx is not None and idx != emitted:
+            raise AIError("Translation stream returned an out-of-order segment")
+        if emitted >= len(segments):
+            raise AIError("Translation stream returned too many segments")
+        return text
+
     async with _limit(name):
         chunks = backends.get(name).stream(
             prompt, model=model("translate"), system=_TRANSLATE_SYS
@@ -284,11 +301,17 @@ async def translate_stream(segments: list[str], target_lang: str, brief: str = "
                 while "\n" in buf:
                     line, buf = buf.split("\n", 1)
                     if line.strip():
-                        yield _parse_line(line.strip())
+                        text = translation(line.strip())
+                        emitted += 1
+                        yield text
         finally:
             await chunks.aclose()
     if buf.strip():
-        yield _parse_line(buf.strip())
+        text = translation(buf.strip())
+        emitted += 1
+        yield text
+    if emitted != len(segments):
+        raise AIError("Translation stream ended before every segment was translated")
 
 
 async def equation_latex(png: bytes) -> str:

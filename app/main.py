@@ -642,24 +642,21 @@ async def translate_stream(req: TranslateReq):
         if not segs:
             store.cache_put(req.doc_id, key, {"segments": [], "translation": ""})
             return
-        # Map each translation to the segment index the model wrote, so a dropped or merged
-        # line leaves that one segment blank instead of shifting every later one. Fall back to
-        # a running counter when a line has no index. A backend error ends the stream with an
-        # error line and nothing is cached.
-        collected: dict[int, str] = {}
-        nxt = 0
+        # translate_stream yields translations strictly in order and raises AIError if the model
+        # drifts (out-of-order / wrong count), so we number them by arrival — never by the model's
+        # printed index — and a misaligned stream errors out instead of being shown or cached. On
+        # an AIError the client retries the batch and finally falls back to source text.
+        collected: list[str] = []
         try:
             brief = await _get_brief(req.doc_id, doc, req.target_lang)
             chunks = ai.translate_stream(segs, req.target_lang, brief=brief)
             try:
-                async for idx, tr in chunks:
-                    if idx is None:
-                        idx = nxt
-                    if not (0 <= idx < len(segs)) or idx in collected:
-                        continue
-                    nxt = idx + 1
-                    collected[idx] = tr
-                    yield json.dumps({"i": idx, "tr": tr}, ensure_ascii=False) + "\n"
+                async for tr in chunks:
+                    yield (
+                        json.dumps({"i": len(collected), "tr": tr}, ensure_ascii=False)
+                        + "\n"
+                    )
+                    collected.append(tr)
             finally:
                 await chunks.aclose()
         except AIError as exc:
@@ -671,16 +668,13 @@ async def translate_stream(req: TranslateReq):
                 + "\n"
             )
             return
-        pairs = [{"src": segs[k], "tr": collected.get(k, "")} for k in range(len(segs))]
+        # Reaching here means the stream completed in order with exactly one line per segment, so
+        # the cache is always complete and aligned.
+        pairs = [{"src": segs[k], "tr": collected[k]} for k in range(len(segs))]
         store.cache_put(
             req.doc_id,
             key,
-            {
-                "segments": pairs,
-                "translation": "\n\n".join(
-                    collected.get(k, "") for k in range(len(segs))
-                ),
-            },
+            {"segments": pairs, "translation": "\n\n".join(collected)},
         )
 
     return StreamingResponse(gen(), media_type="application/x-ndjson")

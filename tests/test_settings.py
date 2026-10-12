@@ -27,9 +27,7 @@ class SettingsTests(unittest.TestCase):
         self.assertIsNone(s["backend"])
         self.assertEqual(settings.model_for(s, "hermes", "translate"), "gpt-6-luna")
         self.assertEqual(settings.model_for(s, "hermes", "chat"), "gpt-6.1-sol")
-        self.assertEqual(
-            settings.model_for(s, "claude", "translate"), "claude-haiku-5-5"
-        )
+        self.assertEqual(settings.model_for(s, "claude", "translate"), "sonnet")
         self.assertEqual(settings.model_for(s, "claude", "summary"), "sonnet")
         self.assertEqual(settings.concurrency_for(s, "claude"), 8)
 

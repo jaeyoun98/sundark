@@ -95,7 +95,9 @@ class ApiTests(unittest.TestCase):
             )
         self.assertEqual(r.status_code, 200)
         probed = sorted(call.args[1] for call in probe.await_args_list)
-        self.assertEqual(probed, ["claude-haiku-5-5", "opus", "sonnet"])
+        self.assertEqual(
+            probed, ["opus", "sonnet"]
+        )  # chat=opus override, everything else sonnet
         self.assertEqual(settings.load()["backend"], "claude")
 
     def test_cache_keys_differ_per_backend(self):
@@ -134,7 +136,7 @@ class ApiTests(unittest.TestCase):
 
     def test_stream_rate_limit_line_and_no_cache(self):
         async def stream(segs, lang, brief=""):
-            yield (0, "가")
+            yield "가"  # translate_stream yields translations in order; server numbers by arrival
             raise RateLimitError("limit")
 
         with (

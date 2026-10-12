@@ -24,9 +24,12 @@ TASKS = (
 )
 DEFAULT_CONCURRENCY = 8
 MAX_CONCURRENCY = 16
+# Hermes keeps a cheap model for the high-volume tasks; Claude defaults every task to sonnet
+# (sonnet follows the per-segment numbering contract far more reliably than haiku, which keeps
+# streamed translations aligned with their source — see ai.translate_stream).
 _FAST = ("translate", "equation", "brief")
 DEFAULT_MODELS = {
-    "claude": {t: ("claude-haiku-5-5" if t in _FAST else "sonnet") for t in TASKS},
+    "claude": {t: "sonnet" for t in TASKS},
     "hermes": {t: ("gpt-6-luna" if t in _FAST else "gpt-6.1-sol") for t in TASKS},
 }
 _MODEL_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:/@-]{0,119}")
