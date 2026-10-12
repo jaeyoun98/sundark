@@ -145,7 +145,7 @@ $("file").addEventListener("change", async (e) => {
 async function openDoc(meta) {
   S.docId = meta.doc_id;
   S.numPages = meta.num_pages;
-  setTitle(meta.title + "  ·  " + meta.num_pages + " pages");
+  setTitle(meta.title + (meta.byline ? "  ·  " + meta.byline : "") + "  ·  " + meta.num_pages + " pages");
 
   // Cover the whole workspace with the loading screen the instant the paper is opened, before
   // any await, so the PDF never flashes into view before it is ready. The warm-up below keeps it
