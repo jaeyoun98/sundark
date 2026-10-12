@@ -12,7 +12,16 @@ from pathlib import Path
 from .store import DATA
 
 BACKEND_NAMES = ("claude", "hermes")
-TASKS = ("translate", "summary", "anatomy", "chat", "explain", "equation", "brief")
+TASKS = (
+    "translate",
+    "summary",
+    "anatomy",
+    "chat",
+    "explain",
+    "equation",
+    "brief",
+    "review",
+)
 DEFAULT_CONCURRENCY = 8
 MAX_CONCURRENCY = 16
 # Hermes keeps a cheap model for the high-volume tasks; Claude defaults every task to sonnet

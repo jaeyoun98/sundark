@@ -7,9 +7,13 @@ calls Claude (via the subscription CLI) for summary, translation, and Q&A.
 from __future__ import annotations
 
 import asyncio
+import datetime
 import hashlib
+import io
 import json
 import os
+import re
+import zipfile
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request, UploadFile
@@ -378,6 +382,29 @@ async def get_pdf(doc_id: str):
     return FileResponse(path, media_type="application/pdf")
 
 
+def _save_to_library(filename: str, data: bytes) -> None:
+    """Also keep an uploaded PDF in the papers folder so it shows up in the Library and can be
+    reopened later. Best-effort: a failure here must not fail the upload (the doc is already
+    ingested and opens from data/). The name is reduced to a basename, so no path can escape
+    PAPERS_DIR."""
+    name = Path(filename or "upload.pdf").name
+    if not name.lower().endswith(".pdf"):
+        name += ".pdf"
+    dest = PAPERS_DIR / name
+    try:
+        stem, suffix = dest.stem, dest.suffix
+        i = 1
+        while dest.exists() and dest.read_bytes() != data:
+            dest = (
+                PAPERS_DIR / f"{stem}-{i}{suffix}"
+            )  # keep a same-named, different file
+            i += 1
+        if not dest.exists():
+            dest.write_bytes(data)
+    except OSError:
+        pass
+
+
 @app.post("/api/upload")
 async def upload(file: UploadFile):
     if not (file.filename or "").lower().endswith(".pdf"):
@@ -386,9 +413,11 @@ async def upload(file: UploadFile):
     if not data:
         raise HTTPException(400, "Empty file")
     try:
-        return _schedule_prewarm(await _ingest(data))
+        meta = await _ingest(data)
     except Exception as e:
         raise HTTPException(400, f"Could not read PDF: {e}") from e
+    _save_to_library(file.filename, data)
+    return _schedule_prewarm(meta)
 
 
 class SummarizeReq(BaseModel):
@@ -448,6 +477,169 @@ async def anatomy(req: AnatomyReq):
 
     store.cache_put(req.doc_id, key, result)
     return result
+
+
+# --- Review export -------------------------------------------------------------------------
+# A one-click "memory note": synthesize a Korean review from the materials already gathered for
+# a paper (summary + anatomy + chat), crop only the figures the note references, and hand back a
+# Hugo page bundle (<slug>/index.md + <slug>/<id>.png) as a zip.
+
+_SLUG_RE = re.compile(r"[^a-z0-9]+")
+# Markdown image whose target is one of our figure ids, e.g. ![caption](fig-p3-1.png).
+_IMG_REF_RE = re.compile(r"!\[[^\]]*\]\((fig|tbl)-p\d+-\d+\.png\)")
+_IMG_ID_RE = re.compile(r"!\[[^\]]*\]\(((?:fig|tbl)-p\d+-\d+)\.png\)")
+
+
+def _slug(title: str, fallback: str) -> str:
+    """ASCII kebab-case slug for the bundle folder; `fallback` (the doc id) when nothing is left
+    (e.g. a title with no ASCII letters)."""
+    s = _SLUG_RE.sub("-", (title or "").lower()).strip("-")
+    return s or fallback
+
+
+def _referenced_ids(body: str) -> list[str]:
+    """Figure ids the review body actually links to, in first-seen order."""
+    seen: list[str] = []
+    for m in _IMG_ID_RE.finditer(body):
+        if m.group(1) not in seen:
+            seen.append(m.group(1))
+    return seen
+
+
+def _yaml_value(v) -> str:
+    """Serialize a frontmatter scalar/list as YAML. JSON flow syntax is valid YAML, so quoting
+    strings and lists through json keeps them safe without a YAML dependency."""
+    if v is None:
+        return ""
+    if isinstance(v, bool):
+        return "true" if v else "false"
+    if isinstance(v, int):
+        return str(v)
+    if isinstance(v, list):
+        return "[" + ", ".join(json.dumps(str(x), ensure_ascii=False) for x in v) + "]"
+    return json.dumps(str(v), ensure_ascii=False)
+
+
+def _frontmatter(rv: dict, *, date: str, has_math: bool) -> str:
+    """Hugo frontmatter block. `date`, `draft`, `math`, `arxiv`, `link` are set deterministically;
+    the rest come from the model's review object."""
+    fields = [
+        ("title", rv.get("title") or rv.get("paper_title") or "Untitled"),
+        ("date", date),
+        ("draft", True),
+        ("paper_title", rv.get("paper_title") or ""),
+        ("authors", rv.get("authors") or []),
+        ("venue", rv.get("venue") or ""),
+        ("year", rv.get("year") if isinstance(rv.get("year"), int) else None),
+        ("arxiv", ""),
+        ("link", ""),
+        ("tags", rv.get("tags") or []),
+        ("summary", rv.get("summary") or ""),
+        ("math", has_math),
+    ]
+    lines = ["---"]
+    for k, v in fields:
+        # `date` is an unquoted RFC3339 timestamp, not a YAML-quoted string.
+        lines.append(f"date: {date}" if k == "date" else f"{k}: {_yaml_value(v)}")
+    lines.append("---")
+    return "\n".join(lines) + "\n"
+
+
+@app.post("/api/review/{doc_id}")
+async def review_export(doc_id: str):
+    """Generate the review note and return it as a zipped Hugo page bundle."""
+    doc = _require_doc(doc_id)
+    pages = doc["pages"]
+    text = pdf_utils.full_text(pages)
+
+    # Materials: summary and anatomy are generated (and cached) on demand if not present yet.
+    # A single material failing (e.g. anatomy returns unparseable JSON) must not sink the whole
+    # export — the review can still be written from the rest. A rate limit still propagates.
+    skey = f"summary_{ai.cache_tag('summary')}"
+    summ = store.cache_get(doc_id, skey)
+    if summ is None:
+        try:
+            summ = {"summary": await ai.summarize(text)}
+            store.cache_put(doc_id, skey, summ)
+        except RateLimitError:
+            raise
+        except AIError:
+            summ = {"summary": ""}
+
+    akey = f"anatomy_{ai.cache_tag('anatomy')}"
+    anat = store.cache_get(doc_id, akey)
+    if anat is None:
+        try:
+            anat = await ai.anatomy(text)
+            for name in ("problem", "gap", "claim", "method", "limitations"):
+                _verify_card_quotes(anat.get(name, {}), text)
+            for sub in (anat.get("evidence") or {}).values():
+                _verify_card_quotes(sub, text)
+            store.cache_put(doc_id, akey, anat)
+        except RateLimitError:
+            raise
+        except AIError:
+            anat = {}
+
+    chat_turns = store.chat_get(doc_id)
+    glossary = await _get_brief(doc_id, doc, "Korean")
+
+    # Figures + display-math presence (heavy: the layout model runs on every page).
+    pdf_bytes = store.pdf_path(doc_id).read_bytes()
+    assets = await asyncio.to_thread(pdf_utils.figure_catalog, pdf_bytes)
+    figures = assets["figures"]
+
+    rv = await ai.review(
+        summary=summ.get("summary", ""),
+        anatomy_obj=anat,
+        chat_turns=chat_turns,
+        figures=[{"id": f["id"], "caption": f["caption"]} for f in figures],
+        front_matter=pdf_utils.brief_source(pages),
+        glossary=glossary,
+    )
+    body = rv.get("body", "")
+
+    # Crop only the figures the note links to; drop a link whose crop fails or whose id is unknown
+    # so the note never carries a broken image.
+    by_id = {f["id"]: f for f in figures}
+    crops: dict[str, bytes] = {}
+    for fid in _referenced_ids(body):
+        f = by_id.get(fid)
+        if f is None:
+            continue
+        try:
+            crops[fid] = await asyncio.to_thread(
+                pdf_utils.crop_region_png, pdf_bytes, f["page"], f["bbox"]
+            )
+        except Exception:  # noqa: BLE001 — skip an unreadable crop, keep the note
+            pass
+    body = _IMG_REF_RE.sub(
+        lambda m: m.group(0) if _IMG_ID_RE.match(m.group(0)).group(1) in crops else "",
+        body,
+    )
+
+    date = datetime.datetime.now(
+        datetime.timezone(datetime.timedelta(hours=9))
+    ).strftime("%Y-%m-%dT%H:%M:%S+09:00")
+    index_md = (
+        _frontmatter(rv, date=date, has_math=assets["has_math"])
+        + "\n"
+        + body.strip()
+        + "\n"
+    )
+    slug = _slug(rv.get("title") or doc["meta"].get("title", ""), doc_id)
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+        z.writestr(f"{slug}/index.md", index_md)
+        for fid, png in crops.items():
+            z.writestr(f"{slug}/{fid}.png", png)
+    buf.seek(0)
+    return StreamingResponse(
+        buf,
+        media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="{slug}.zip"'},
+    )
 
 
 class TranslateReq(BaseModel):

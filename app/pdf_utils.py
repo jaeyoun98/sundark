@@ -1376,3 +1376,55 @@ def crop_region_png(
         return page.get_pixmap(dpi=dpi, clip=clip).tobytes("png")
     finally:
         doc.close()
+
+
+def _caption_text(page, region: dict, captions: list[dict]) -> str:
+    """Text of the caption box nearest to a figure/table region: horizontal overlap with the
+    smallest vertical gap (a caption sits just below a figure or just above a table). '' when
+    there is none."""
+    best, best_gap = None, float("inf")
+    for c in captions:
+        if c["x1"] < region["x0"] or c["x0"] > region["x1"]:
+            continue  # no horizontal overlap
+        gap = min(abs(c["y0"] - region["y1"]), abs(region["y0"] - c["y1"]))
+        if gap < best_gap:
+            best, best_gap = c, gap
+    if best is None:
+        return ""
+    rect = pymupdf.Rect(best["x0"], best["y0"], best["x1"], best["y1"])
+    return " ".join(page.get_text("text", clip=rect).split())[:300]
+
+
+def figure_catalog(pdf_bytes: bytes) -> dict:
+    """Figures/tables (each with its caption) and whether any display math is present, for the
+    review export. Requires the layout model. Returns
+    {"figures": [{id, page (0-based), bbox, caption, kind}], "has_math": bool}.
+    ids are human-readable: fig-p<1-based>-<n> / tbl-p<1-based>-<n>."""
+    doc = pymupdf.open(stream=pdf_bytes, filetype="pdf")
+    figures: list[dict] = []
+    has_math = False
+    try:
+        for pi in range(doc.page_count):
+            page = doc[pi]
+            regions = layout_model.detect_page(page) or []
+            captions = [r for r in regions if r["role"] == "caption"]
+            if any(r["role"] == "formula" for r in regions):
+                has_math = True
+            counts: dict[str, int] = {}
+            for r in regions:
+                if r["role"] not in ("figure", "table"):
+                    continue
+                kind = "fig" if r["role"] == "figure" else "tbl"
+                counts[kind] = counts.get(kind, 0) + 1
+                figures.append(
+                    {
+                        "id": f"{kind}-p{pi + 1}-{counts[kind]}",
+                        "page": pi,
+                        "bbox": (r["x0"], r["y0"], r["x1"], r["y1"]),
+                        "caption": _caption_text(page, r, captions),
+                        "kind": kind,
+                    }
+                )
+    finally:
+        doc.close()
+    return {"figures": figures, "has_math": has_math}
