@@ -221,8 +221,9 @@ _layout_lock = asyncio.Lock()
 # fragments from spaced inline math. A hybrid-heading attempt was tried and reverted — it hurt
 # precision on the .tex eval — so heading detection stays pure title-box. v5: strip C0/DEL control
 # characters (PDF math bracket delimiters) from word tokens. v6: rejoin same-baseline line
-# fragments the PDF split around inline math.)
-_LAYOUT_VERSION = 6
+# fragments the PDF split around inline math. v7: also rejoin a raised/lowered glyph fragment
+# such as a radical, and measure line gaps on median glyph extents.)
+_LAYOUT_VERSION = 7
 
 
 def _page_layout_cached(doc_id: str, page: int) -> dict:

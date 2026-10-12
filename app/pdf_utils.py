@@ -632,6 +632,32 @@ def layout(
     return core
 
 
+def _joins_line(prev: dict, nxt: dict) -> bool:
+    """True when `nxt` continues the same visual line as `prev` (both are line dicts with
+    left/right/top/bottom/size/h/cy). Fragments on one baseline separated by a small gap join.
+    So does a narrow glyph fragment that touches `prev` and overlaps it vertically: a radical,
+    integral, or large operator is drawn well above or below the baseline, so its center sits
+    too far from the line's to pass the baseline test (e.g. "O(" then a raised "√" in "O(√d)").
+    The width guard keeps a two-column row apart; its halves are wide and far apart."""
+    size = prev["size"] or nxt["size"] or 10
+    gap = nxt["left"] - prev["right"]
+    if not -size <= gap <= size * 1.8:
+        return False
+    if abs(nxt["cy"] - prev["cy"]) <= max(prev["h"], nxt["h"]) * 0.6:
+        return True
+    narrow = nxt["right"] - nxt["left"] <= size * 1.5
+    touching = abs(gap) <= size * 0.5
+    overlap = min(prev["bottom"], nxt["bottom"]) - max(prev["top"], nxt["top"]) > 0
+    return narrow and touching and overlap
+
+
+def _line_gap(upper: dict, lower: dict) -> float:
+    """Vertical gap between two lines, measured on their typical glyphs (median top/bottom of
+    the words) so one raised or lowered glyph — a radical, integral, or large operator — does
+    not make adjacent lines look overlapping and break the paragraph between them."""
+    return statistics.median(lower["y0"]) - statistics.median(upper["y1"])
+
+
 def _page_layout(
     pdf_bytes: bytes,
     page_index: int,
@@ -765,7 +791,8 @@ def _page_layout(
                 min(ln["x0"]),
             )
             ln["h"] = ln["bottom"] - ln["top"]
-            ln["cx"] = (min(ln["x0"]) + max(words[g]["x1"] for g in ln["widx"])) / 2
+            ln["right"] = max(words[g]["x1"] for g in ln["widx"])
+            ln["cx"] = (min(ln["x0"]) + ln["right"]) / 2
             ln["cy"] = (ln["top"] + ln["bottom"]) / 2
             # A line is a display-equation line when its center is inside a model formula box.
             # Consecutive such lines (one box spans the whole equation) group into one segment.
@@ -790,7 +817,8 @@ def _page_layout(
                 min(ln["x0"]),
             )
             ln["h"] = ln["bottom"] - ln["top"]
-            ln["cx"] = (min(ln["x0"]) + _lright(ln)) / 2
+            ln["right"] = _lright(ln)
+            ln["cx"] = (min(ln["x0"]) + ln["right"]) / 2
             ln["cy"] = (ln["top"] + ln["bottom"]) / 2
             ln["math"] = _in_rects(ln["cx"], ln["cy"], formula_rects)
 
@@ -798,12 +826,7 @@ def _page_layout(
         for ln in lines:
             if merged_lines:
                 prev = merged_lines[-1]
-                size = prev["size"] or ln["size"] or 10
-                gap = ln["left"] - _lright(prev)
-                same_baseline = (
-                    abs(ln["cy"] - prev["cy"]) <= max(prev["h"], ln["h"]) * 0.6
-                )
-                if same_baseline and -size <= gap <= size * 1.8:
+                if _joins_line(prev, ln):
                     prev["widx"].extend(ln["widx"])
                     prev["sizes"].extend(ln["sizes"])
                     prev["y0"].extend(ln["y0"])
@@ -908,7 +931,7 @@ def _page_layout(
                 if ln["key"][0] == prev["key"][0]:  # same block
                     cont = True
                 elif not prev_ended:
-                    gap = ln["top"] - prev["bottom"]
+                    gap = _line_gap(prev, ln)
                     same_col = (
                         abs(ln["left"] - prev["left"]) < 40
                         and -5 <= gap <= prev["h"] * 2.2
