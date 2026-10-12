@@ -35,11 +35,13 @@ class PaperApiTests(unittest.TestCase):
             patch.object(store, "CACHE", root / "cache"),
             patch.object(store, "CHATS", root / "chats"),
             patch.object(store, "PAPERS", root / "papers"),
+            # upload() copies each PDF into the library folder; keep it out of papers/
+            patch.object(main, "PAPERS_DIR", root / "library"),
             patch("app.main._schedule_prewarm", side_effect=lambda meta: meta),
         ]
         for p in self.patches:
             p.start()
-        for d in ("pdfs", "docs", "cache"):
+        for d in ("pdfs", "docs", "cache", "library"):
             (root / d).mkdir()
         self.root = root
         settings.save("hermes", {}, 8)
