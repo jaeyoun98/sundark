@@ -10,7 +10,7 @@
   --accent-ink: #06101f;
   --hl: rgba(91, 155, 255, 0.20);         /* translation-panel highlight */
   --sel: rgba(91, 155, 255, 0.40);        /* PDF text selection */
-  --mark: rgba(203, 222, 255, 0.5);       /* PDF source highlight (soft, translucent) */
+  --mark: rgba(203, 222, 255, 0.5);       /* progress fill; same tint as the PDF highlight (.hlrect) */
   --topbar-h: 52px;
   --radius: 9px;
 }
@@ -94,11 +94,13 @@ button { font: inherit; }
   box-shadow: 0 4px 24px rgba(0,0,0,.5); }
 .pdfpage canvas { display: block; border-radius: 3px; }
 .pdfpage .ph { display: flex; align-items: center; justify-content: center; color: #9a9aa5; font-size: 13px; height: 100%; }
-.hllayer { position: absolute; inset: 0; pointer-events: none; }
-.hlrect { position: absolute; background: var(--mark); border-radius: 3px;
-  box-shadow: 0 0 0 1px rgba(150, 185, 255, 0.55); }
+/* Opaque rects in a translucent layer: overlapping rects of one sentence paint as one. */
+.hllayer { position: absolute; inset: 0; pointer-events: none; opacity: 0.5; }
+.hlrect { position: absolute; background: rgb(203, 222, 255); border-radius: 3px; }
+.hlrect.hlring { box-shadow: 0 0 0 1px rgb(150, 185, 255); }
 .textlayer { position: absolute; inset: 0; overflow: hidden; line-height: 1; }
-.textlayer span { position: absolute; white-space: pre; transform-origin: 0 0; color: transparent; cursor: text; }
+.textlayer span { position: absolute; white-space: pre; transform-origin: 0 0; color: transparent; cursor: text;
+  overflow: hidden; }
 .pdfview ::selection { background: var(--sel); }
 
 /* ---------- AI panel ---------- */

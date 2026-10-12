@@ -166,9 +166,10 @@ Requires Claude Code (`claude`, signed in) or Hermes (`hermes setup`). Pick one 
 - **Sentences that wrap across a page break are stitched whole.** `layout()` keeps
   such a sentence on the page where it STARTS: that page absorbs the next page's
   continuation fragment and records its geometry under `words_next` for cross-page
-  highlighting; the next page drops that fragment. Both pages decide with the same
-  rule (`_stitch_idx`), so they agree. The continuation is the first
-  lowercase-starting sentence that opens its paragraph; sentences inside a
+  highlighting; the next page drops that fragment (the browser maps those words back
+  to the owning sentence, so hovering them highlights it on both pages). Both pages
+  decide with the same rule (`_stitch_idx`), so they agree. The continuation is the
+  first lowercase-starting sentence that opens its paragraph; sentences inside a
   model `caption` box are skipped and do not count toward the scan limit. A tail
   ending in a hyphenated word ("fea-" | "tures") is rejoined, and a tail left open on
   ")" or an acronym is stitched when the next page's first prose sentence starts with
@@ -195,6 +196,17 @@ Requires Claude Code (`claude`, signed in) or Hermes (`hermes setup`). Pick one 
   duplicated. A sentence segmenter swap (Stanza, SaT) was measured and rejected: none
   reliably splits comma-joined lists, and both are much slower (Stanza ran 8x slower
   than spaCy on real per-paragraph calls).
+- **Highlights follow lines, not glyph boxes.** `lineRects()` in `web/app.js` folds a
+  script-size glyph into its line's rect instead of opening a second, overlapping
+  rect, and attaches tall TeX math-font boxes (CMSY10/CMEX10, which PyMuPDF sizes from
+  the font descender) by x-extent only, so a bar never grows over the next line;
+  display equations keep the plain rule. The rects that still overlap (a script that
+  sticks out, line boxes taller than the line spacing) paint ONCE: the rects are
+  opaque and the highlight layer, which only ever holds one sentence, carries the
+  translucency, so do not move the opacity back onto `.hlrect`. Text-layer spans are
+  clipped to their word box: the fallback font draws wider than the PDF font, and a
+  rotated side stamp ("arXiv ... 2026") would otherwise cover a whole column and
+  steal its hover.
 - **End matter is not translated, but the appendix is.** `end_matter_range()`
   finds the References/Acknowledgements/Funding span (page 0 is excluded so an
   author-funding footnote never triggers it) and returns a (start, end) range that

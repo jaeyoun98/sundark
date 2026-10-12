@@ -274,7 +274,7 @@ function ensureLayout(i) {
         para: s.para,
         size: s.size,
         heading: s.heading,
-        rects: lineRects(s.words.map((wi) => L.words[wi])),  // in points
+        rects: lineRects(s.words.map((wi) => L.words[wi]), !s.equation),  // in points
         // A sentence that wraps to the next page carries that page's word boxes too, so the
         // highlight can span both pages.
         rectsNext: s.words_next ? lineRects(s.words_next) : null,
@@ -318,6 +318,11 @@ async function ensureRendered(i) {
       const h = (w.y1 - w.y0) * sc;
       span.style.left = (w.x0 * sc) + "px";
       span.style.top = (w.y0 * sc) + "px";
+      // Clip the span to its word box (overflow: hidden in .textlayer span). The fallback font
+      // draws ~1.35x wider than the PDF font, and a rotated word (the arXiv side stamp) gets a
+      // font-size of its whole height, so an unclipped span covers its neighbours and steals
+      // their hover.
+      span.style.width = ((w.x1 - w.x0) * sc) + "px";
       span.style.fontSize = h + "px";
       span.style.lineHeight = h + "px";
       frag.appendChild(span);
@@ -325,6 +330,20 @@ async function ensureRendered(i) {
     }
     textEl.appendChild(frag);
     L.sentences.forEach((s, k) => s.words.forEach((wi) => { if (wordSpans[wi]) wordSpans[wi]._seg = k; }));
+    // The top of this page may finish a sentence that the previous page owns: layout() moves the
+    // continuation there (as words_next) and drops it here, so its words have no sentence on this
+    // page. Point them at that sentence, so hovering them highlights it on both pages.
+    const prev = i > 0 ? S.pages[i - 1] : null;
+    if (prev && (await ensureLayout(i - 1)) && prev.layout) {
+      const at = new Map(L.words.map((w, wi) => [`${w.x0},${w.y0},${w.x1},${w.y1}`, wi]));
+      prev.layout.sentences.forEach((s, k) => {
+        if (s.cont_next_page !== i || !s.words_next) return;
+        for (const w of s.words_next) {
+          const sp = wordSpans[at.get(`${w.x0},${w.y0},${w.x1},${w.y1}`)];
+          if (sp && sp._seg == null) { sp._seg = k; sp._segPage = i - 1; }
+        }
+      });
+    }
   }
   attachPdfHover(i, textEl);
 }
@@ -377,23 +396,88 @@ async function translateAll(force) {
 }
 
 // Merge a sentence's word boxes into one rectangle per visual line (in PDF points).
-function lineRects(words) {
+// A word joins the current line when its top is within 0.7 x its own height of the line's top.
+// Sub/superscript glyphs (x_d, k_{q,t}, m_t) sit on a shifted baseline, so the smaller ones fail
+// that test and would open a second, overlapping rect (a doubled highlight). Such a glyph is
+// folded into the current line when (a) it is script-size (<= 0.8 x the sentence's text height),
+// (b) its vertical center lies in the line's text band (median top..median bottom of its
+// regular-size words, +-25%), (c) it is horizontally next to a word already in the line, and
+// (d) its center is nearer this line than the next text line. A folded glyph does not move the
+// line's reference top, so it cannot pull the next line in, and tall math boxes never widen the
+// band. Words that pass the first test are handled as before, so a sentence without script
+// glyphs gets the same rects. Display equations (foldScripts = false) keep the plain rule: their
+// fractions and matrices are 2D, not lines.
+function lineRects(words, foldScripts = true) {
   const ws = words
     .map((w) => ({ x0: w.x0, y0: w.y0, x1: w.x1, y1: w.y1 }))
     .sort((a, b) => a.y0 - b.y0 || a.x0 - b.x0);
+  if (!ws.length) return [];
+  const hs = ws.map((w) => w.y1 - w.y0).sort((a, b) => a - b);
+  const href = hs[Math.min(hs.length - 1, Math.floor(0.75 * hs.length))];  // full text height
+  // TeX math-font glyphs (CMSY10 x, -, F, H; CMEX10 hats, radicals, sums) get a word box that
+  // hangs 0.6-2 x the text height below the line (PyMuPDF sizes it from the font's descender),
+  // and a hat accent's box also starts above the line. Grouped like other words, such a box
+  // draws its line's rect down over the next line and, via the 0.7 x h test, joins the line
+  // above. So prose lines are built without them (they are < 25% of the words, as href is the
+  // upper quartile) and each is then attached, x-extent only, to the line rect that holds the
+  // centre of its top text-height slice (where the glyph is drawn).
+  const isTall = (w) => foldScripts && w.y1 - w.y0 > 1.3 * href;
+  const tall = ws.filter(isTall);
+  const body = tall.length ? ws.filter((w) => !isTall(w)) : ws;
+  const isScript = (h) => h <= 0.8 * href;
+  const isRegular = (h) => h > 0.8 * href && h <= 1.3 * href;
+  const median = (xs) => {
+    const s = [...xs].sort((a, b) => a - b), n = s.length;
+    return n % 2 ? s[(n - 1) / 2] : (s[n / 2 - 1] + s[n / 2]) / 2;
+  };
   const rects = [];
-  let cur = null;
-  for (const w of ws) {
-    const h = w.y1 - w.y0;
-    if (cur && Math.abs(w.y0 - cur.y0) <= h * 0.7) {
-      cur.x0 = Math.min(cur.x0, w.x0); cur.y0 = Math.min(cur.y0, w.y0);
-      cur.x1 = Math.max(cur.x1, w.x1); cur.y1 = Math.max(cur.y1, w.y1);
-    } else {
-      if (cur) rects.push(cur);
-      cur = { ...w };
+  let cur = null;  // {x0,y0,x1,y1, top: first-test reference, xs: x-ranges, tops/bots: band}
+  const grow = (w) => {
+    cur.x0 = Math.min(cur.x0, w.x0); cur.y0 = Math.min(cur.y0, w.y0);
+    cur.x1 = Math.max(cur.x1, w.x1); cur.y1 = Math.max(cur.y1, w.y1);
+    cur.xs.push([w.x0, w.x1]);
+  };
+  const foldsInto = (w, i) => {
+    const t = median(cur.tops), b = median(cur.bots), pad = (b - t) * 0.25;
+    const cy = (w.y0 + w.y1) / 2;
+    if (!(cy > t - pad && cy < b + pad)) return false;
+    if (!cur.xs.some(([a, c]) => Math.max(a, w.x0) - Math.min(c, w.x1) <= href)) return false;
+    // The next text line starts at the first later regular word the first test would not join.
+    for (let j = i + 1; j < body.length; j++) {
+      const u = body[j], uh = u.y1 - u.y0;
+      if (isRegular(uh) && Math.abs(u.y0 - cur.top) > uh * 0.7) {
+        return Math.abs(cy - (t + b) / 2) < Math.abs(cy - (u.y0 + u.y1) / 2);
+      }
     }
+    return true;
+  };
+  body.forEach((w, i) => {
+    const h = w.y1 - w.y0;
+    if (cur && Math.abs(w.y0 - cur.top) <= h * 0.7) {
+      grow(w);
+      cur.top = Math.min(cur.top, w.y0);
+      if (isRegular(h)) { cur.tops.push(w.y0); cur.bots.push(w.y1); }
+      return;
+    }
+    if (foldScripts && cur && cur.tops.length && isScript(h) && foldsInto(w, i)) {
+      grow(w);
+      return;
+    }
+    if (cur) rects.push(cur);
+    cur = { x0: w.x0, y0: w.y0, x1: w.x1, y1: w.y1, top: w.y0, xs: [[w.x0, w.x1]], tops: [], bots: [] };
+    if (isRegular(h)) { cur.tops.push(w.y0); cur.bots.push(w.y1); }
+  });
+  rects.push(cur);
+  for (const w of tall) {
+    const cy = w.y0 + href / 2, mid = (r) => Math.abs(cy - (r.y0 + r.y1) / 2);
+    let best = null;
+    for (const r of rects) {
+      const near = Math.max(r.x0 - w.x1, w.x0 - r.x1) <= href;
+      if (near && cy >= r.y0 && cy <= r.y1 && (!best || mid(r) < mid(best))) best = r;
+    }
+    if (best) { best.x0 = Math.min(best.x0, w.x0); best.x1 = Math.max(best.x1, w.x1); }
+    else rects.push({ x0: w.x0, y0: w.y0, x1: w.x1, y1: w.y0 + href });
   }
-  if (cur) rects.push(cur);
   return rects.map((r) => ({ left: r.x0, top: r.y0, w: r.x1 - r.x0, h: r.y1 - r.y0 }));
 }
 
@@ -608,12 +692,18 @@ function drawHlRects(P, rects, on) {
   P.hllayer.innerHTML = "";
   if (!on) return;
   const sc = S.scale;  // rects are in PDF points; scale to pixels
-  for (const r of rects) {
-    const d = document.createElement("div");
-    d.className = "hlrect";
-    d.style.left = (r.left * sc) + "px"; d.style.top = (r.top * sc) + "px";
-    d.style.width = (r.w * sc) + "px"; d.style.height = (r.h * sc) + "px";
-    P.hllayer.appendChild(d);
+  // The layer holds one sentence and is translucent as a whole (styles.css), so where its
+  // rects overlap (line boxes taller than the line spacing) the colour does not stack into
+  // a darker seam. Outlines go in first; the fills drawn after them cover every outline
+  // part that falls inside the highlight, leaving one outline around the whole shape.
+  for (const cls of ["hlrect hlring", "hlrect"]) {
+    for (const r of rects) {
+      const d = document.createElement("div");
+      d.className = cls;
+      d.style.left = (r.left * sc) + "px"; d.style.top = (r.top * sc) + "px";
+      d.style.width = (r.w * sc) + "px"; d.style.height = (r.h * sc) + "px";
+      P.hllayer.appendChild(d);
+    }
   }
 }
 
@@ -657,12 +747,13 @@ function attachPdfHover(page, textEl) {
     const sp = e.target && e.target.closest ? e.target.closest("span") : null;
     const k = sp ? sp._seg : undefined;
     if (k == null) return; // over a gap between words — keep current highlight (no flicker)
-    if (!pdfHoverCur || pdfHoverCur.page !== page || pdfHoverCur.k !== k) {
+    const pg = sp._segPage ?? page;  // a continuation word belongs to the previous page's sentence
+    if (!pdfHoverCur || pdfHoverCur.page !== pg || pdfHoverCur.k !== k) {
       clearPdfHover();
-      pdfHoverCur = { page, k };
-      setHover(page, k, true);
-      const t = $("trlist").querySelector(`.trseg[data-page="${page}"][data-i="${k}"]`);
-      if (t && $("tab-translation").classList.contains("active")) scrollTrToSeg(page, k, t);
+      pdfHoverCur = { page: pg, k };
+      setHover(pg, k, true);
+      const t = $("trlist").querySelector(`.trseg[data-page="${pg}"][data-i="${k}"]`);
+      if (t && $("tab-translation").classList.contains("active")) scrollTrToSeg(pg, k, t);
     }
   });
   textEl.addEventListener("mouseleave", clearPdfHover);
