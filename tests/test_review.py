@@ -1,4 +1,5 @@
 import io
+import json
 import os
 import tempfile
 import unittest
@@ -163,6 +164,27 @@ class ReviewEndpointTests(unittest.TestCase):
         self.assertEqual(res.status_code, 200)
         zf = zipfile.ZipFile(io.BytesIO(res.content))
         self.assertEqual(zf.namelist(), ["realign-test/index.md"])
+
+    def _review_kwargs(self):
+        rv = AsyncMock(return_value={"title": "T", "body": "본문"})
+        with patch("app.main.ai.review", new=rv):
+            self.assertEqual(self.client.post("/api/review/d1").status_code, 200)
+        return rv.call_args.kwargs
+
+    def test_review_reads_the_chat_saved_under_the_paper_id(self):
+        # Chat History is keyed by Paper ID; a doc without one uses "file:<doc_id>".
+        turns = [
+            {"role": "user", "text": "왜 이 방법이 되지?"},
+            {"role": "assistant", "text": "답"},
+        ]
+        store.chat_put("file:d1", turns)
+        self.assertEqual(self._review_kwargs()["chat_turns"], turns)
+
+    def test_review_reads_a_chat_saved_before_paper_ids(self):
+        legacy = [{"role": "user", "text": "예전 질문"}]
+        store.CHATS.mkdir(parents=True, exist_ok=True)
+        (store.CHATS / "d1.json").write_text(json.dumps(legacy), "utf-8")
+        self.assertEqual(self._review_kwargs()["chat_turns"], legacy)
 
 
 if __name__ == "__main__":

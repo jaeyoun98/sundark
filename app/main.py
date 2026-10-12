@@ -581,7 +581,7 @@ async def review_export(doc_id: str):
         except AIError:
             anat = {}
 
-    chat_turns = store.chat_get(doc_id)
+    chat_turns = store.chat_get(_paper_of(doc_id, doc))
     glossary = await _get_brief(doc_id, doc, "Korean")
 
     # Figures + display-math presence (heavy: the layout model runs on every page).
