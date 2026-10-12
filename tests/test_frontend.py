@@ -28,11 +28,10 @@ class FrontendTests(unittest.TestCase):
         self.node("tests/frontend_markdown_math.test.js")
 
     def test_copying_math_yields_latex(self):
-        # KaTeX's copy-tex makes a copied formula paste as its LaTeX source instead of the
-        # hidden MathML plus one line per glyph; it must match the loaded KaTeX version.
+        # app.js owns the copy handler (both text/plain and text/html get LaTeX). KaTeX's
+        # copy-tex must stay out: it rewrites text/html with the doubled KaTeX markup.
         html = (ROOT / "web" / "index.html").read_text(encoding="utf-8")
-        import re
-
-        versions = set(re.findall(r"KaTeX/([\d.]+)/", html))
-        self.assertEqual(len(versions), 1, versions)
-        self.assertIn(f"KaTeX/{versions.pop()}/contrib/copy-tex.min.js", html)
+        js = (ROOT / "web" / "app.js").read_text(encoding="utf-8")
+        self.assertNotIn("copy-tex", html)
+        self.assertIn('document.addEventListener("copy"', js)
+        self.assertIn('setData("text/html"', js)
