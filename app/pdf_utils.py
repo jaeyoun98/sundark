@@ -154,6 +154,18 @@ _ABBR_TAIL = re.compile(
 
 _BULLET_CHARS = "•◦▪▫●○‣⁃∙"
 
+# Enumeration item markers ("a)", "(a)", "(A)", "1)", "(1)", "(i)", "(ii)"...). A sentence
+# segmenter only splits a list when its items end in terminal punctuation, so a comma/"and"-joined
+# list ("(1) x, (2) y, and (3) z") stays glued and a markerless item ("...landscape c) Diffusion")
+# never breaks. We split such runs ourselves, conservatively (see _split_on_markers).
+_ROMAN = {"i", "ii", "iii", "iv", "v", "vi", "vii", "viii", "ix", "x"}
+_ENUM_RE = re.compile(r"(\()?([A-Za-z]{1,4}|\d{1,2})\)")
+_ENUM_ABBR = re.compile(
+    r"\b(Eq|Eqs|Eqn|Fig|Figs|Sec|Secs|Tab|Tabs|Table|No|Nos|Ref|Refs|Ch|App|Appx"
+    r"|Alg|Thm|Lem|Cor|Prop|Def)\.?\s*$",
+    re.IGNORECASE,
+)
+
 # C0/DEL control characters a PDF uses as large-bracket delimiters inside math (e.g. N\x000,σ²I\x01).
 # They are garbage in the text layer, so strip them from every word token before anything else sees
 # them — otherwise they leak into a sentence as a fragment like "0 , σ 2 I \x01".
@@ -179,8 +191,13 @@ def _split_on_bullets(raw: list[tuple[int, int]], text: str) -> list[tuple[int, 
 def _starts_lower_frag(text: str, span: tuple[int, int]) -> bool:
     """True when a fragment begins with a lowercase letter — a real sentence never does, so such
     a fragment is an over-split continuation of the one before it (e.g. the segmenter broke a
-    sentence at the '...' inside spaced-out inline math 'x k - 1 ... x 0, until ...')."""
-    c = text[span[0] : span[1]].lstrip()[:1]
+    sentence at the '...' inside spaced-out inline math 'x k - 1 ... x 0, until ...').
+    An enumeration item ('a)', '(i)') starts lowercase but is a real list item, not a
+    continuation, so it must NOT be merged back into the sentence before it."""
+    frag = text[span[0] : span[1]].lstrip()
+    if _ENUM_RE.match(frag):
+        return False
+    c = frag[:1]
     return c.isalpha() and c.islower() and c.isascii()
 
 
@@ -217,6 +234,64 @@ def _merge_fragments(
     return out
 
 
+def _is_enum_label(lab: str) -> bool:
+    return lab.isdigit() or (len(lab) == 1 and lab.isalpha()) or lab.lower() in _ROMAN
+
+
+def _enum_candidates(text: str) -> list[tuple[int, tuple[bool, str]]]:
+    """Enumeration item markers in `text` as (start, class), with reference-like matches
+    (Eqn.(1), 'Fig 2(a)', 'III-A)', a decimal '0.5)') filtered out. class = (has_paren, kind)."""
+    out: list[tuple[int, tuple[bool, str]]] = []
+    for m in _ENUM_RE.finditer(text):
+        lab = m.group(2)
+        if not _is_enum_label(lab):
+            continue
+        if text[m.end() : m.end() + 1] != " ":  # a real item has text after the marker
+            continue
+        i = m.start()
+        before = text[i - 1] if i > 0 else " "
+        if before.isalnum() or before in "-.":  # 2(a), III-A), decimal 0.5)
+            continue
+        if m.group(1) and _ENUM_ABBR.search(text[:i]):  # Eqn.(1), Fig. (3)
+            continue
+        out.append((i, (bool(m.group(1)), "digit" if lab.isdigit() else "alpha")))
+    return out
+
+
+def _split_on_markers(raw: list[tuple[int, int]], text: str) -> list[tuple[int, int]]:
+    """Split sentence ranges before each item of a qualifying enumeration run: a run of >=2
+    same-class markers introduced by a colon, or any run of >=3. This leaves a lone equation
+    number, an 'Eqn.(1)' reference, and a two-part subfigure phrase ('show (a) X and (b) Y')
+    intact, while breaking real lists the segmenter glued together."""
+    cands = _enum_candidates(text)
+    if len(cands) < 2:
+        return raw
+    splits: set[int] = set()
+    i = 0
+    while i < len(cands):
+        j = i
+        while j + 1 < len(cands) and cands[j + 1][1] == cands[i][1]:
+            j += 1
+        run = cands[i : j + 1]
+        first = run[0][0]
+        colon = ":" in text[max(0, first - 160) : first]
+        if len(run) >= 3 or (len(run) >= 2 and colon):
+            splits.update(pos for pos, _ in run)
+        i = j + 1
+    if not splits:
+        return raw
+    out: list[tuple[int, int]] = []
+    for s, e in raw:
+        last = s
+        for p in sorted(p for p in splits if s < p < e):
+            if text[last:p].strip():
+                out.append((last, p))
+            last = p
+        if text[last:e].strip():
+            out.append((last, e))
+    return out
+
+
 def _split_sentences(text: str) -> list[tuple[int, int, str]]:
     """Split into sentences, returning (start, end, text). Uses pysbd (handles abbreviations,
     decimals, citations, URLs) with a regex fallback, then merges paper-specific leftovers."""
@@ -239,7 +314,7 @@ def _split_sentences(text: str) -> list[tuple[int, int, str]]:
             for m in re.finditer(r".*?(?:[.!?][\"')\]]?(?=\s|$)|$)", text)
             if m.group().strip()
         ]
-    return _merge_fragments(_split_on_bullets(raw, text), text)
+    return _merge_fragments(_split_on_markers(_split_on_bullets(raw, text), text), text)
 
 
 def _keep_sentence(text: str, word_count: int) -> bool:
