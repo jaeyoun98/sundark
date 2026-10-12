@@ -4,6 +4,8 @@ Layout (all under ./data, gitignored):
   data/pdfs/<doc_id>.pdf        original upload
   data/docs/<doc_id>.json       extracted {"pages": [...], "meta": {...}}
   data/cache/<doc_id>/<key>.json cached AI outputs (summary, translations)
+  data/papers/<key>.json         Bibliographic Record per Paper ID (key = hash of the Paper ID)
+  data/chats/<key>.json          Chat History per Paper ID
 """
 
 from __future__ import annotations
@@ -17,6 +19,7 @@ PDFS = DATA / "pdfs"
 DOCS = DATA / "docs"
 CACHE = DATA / "cache"
 CHATS = DATA / "chats"
+PAPERS = DATA / "papers"
 
 for _d in (PDFS, DOCS, CACHE):
     _d.mkdir(parents=True, exist_ok=True)
@@ -60,21 +63,52 @@ def cache_put(doc_id: str, key: str, value: dict) -> None:
     )
 
 
-def chat_get(doc_id: str) -> list[dict]:
-    p = CHATS / f"{doc_id}.json"
+def _key(pid: str) -> str:
+    """Filesystem-safe name for a Paper ID (DOIs may contain '/', '<', ';', ...)."""
+    return hashlib.sha256(pid.encode("utf-8")).hexdigest()[:16]
+
+
+def paper_get(pid: str) -> dict | None:
     try:
-        turns = json.loads(p.read_text("utf-8"))
+        return json.loads((PAPERS / f"{_key(pid)}.json").read_text("utf-8"))
+    except (OSError, ValueError):
+        return None
+
+
+def paper_put(pid: str, record: dict) -> None:
+    PAPERS.mkdir(parents=True, exist_ok=True)
+    (PAPERS / f"{_key(pid)}.json").write_text(
+        json.dumps({"paper_id": pid, **record}, ensure_ascii=False), "utf-8"
+    )
+
+
+def paper_cache_id(pid: str) -> str:
+    """A cache_get/cache_put id for caches that belong to the Paper, not to one PDF file."""
+    return f"paper_{_key(pid)}"
+
+
+def chat_get(pid: str) -> list[dict]:
+    try:
+        turns = json.loads((CHATS / f"{_key(pid)}.json").read_text("utf-8"))
     except (OSError, ValueError):
         return []
     return turns if isinstance(turns, list) else []
 
 
-def chat_put(doc_id: str, turns: list[dict]) -> None:
+def chat_put(pid: str, turns: list[dict]) -> None:
     CHATS.mkdir(parents=True, exist_ok=True)
-    (CHATS / f"{doc_id}.json").write_text(
+    (CHATS / f"{_key(pid)}.json").write_text(
         json.dumps(turns, ensure_ascii=False), "utf-8"
     )
 
 
-def chat_clear(doc_id: str) -> None:
-    (CHATS / f"{doc_id}.json").unlink(missing_ok=True)
+def chat_clear(pid: str) -> None:
+    (CHATS / f"{_key(pid)}.json").unlink(missing_ok=True)
+
+
+def chat_migrate(doc_id: str, pid: str) -> None:
+    """Move a chat saved per doc_id (before Paper IDs) to its Paper, never overwriting."""
+    old = CHATS / f"{doc_id}.json"
+    new = CHATS / f"{_key(pid)}.json"
+    if old.exists() and old != new and not new.exists():
+        old.replace(new)
