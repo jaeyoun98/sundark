@@ -27,7 +27,11 @@ _SUMMARY_SYS = (
 
 
 _TRANSLATE_SYS = (
-    "You translate academic text into the requested target language, keeping technical terms. "
+    "You translate academic text into the requested target language. For technical terms, use "
+    "each term's established rendering in the target language for the paper's field; when a term, "
+    "abbreviation, or proper noun is conventionally kept in its original form in that field (as "
+    "many are), keep it rather than forcing a literal translation, and never invent a "
+    "non-standard rendering. "
     "Convert every mathematical expression — inline symbols, variables, subscripts/"
     "superscripts, and equations — into LaTeX: inline as \\( ... \\), display as \\[ ... \\] "
     "(e.g. \\(p(A_t \\mid O_t)\\), \\(x^{k-1}\\)). Do not translate the math or leave it as "
