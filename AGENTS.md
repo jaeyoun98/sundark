@@ -104,8 +104,13 @@ Requires Claude Code (`claude`, signed in) or Hermes (`hermes setup`). Pick one 
   every result lands in a per-page buffer (`P.trBuf`), and `paintFrontier()` paints only the
   contiguous run of already-buffered sentences from `S.frontier`/`P.frontK`, stopping at the
   first gap — so a later paragraph that finishes first stays buffered and no sentence ever
-  appears before an earlier one. A failed batch falls back to the source text for its range
-  so it cannot stall the frontier. Every AI call is bounded by a per-backend semaphore in `app/ai.py`
+  appears before an earlier one. Alignment is by ARRIVAL ORDER, not by the number the model
+  prints: `ai.translate_stream` yields one translation per segment strictly in order and raises
+  `AIError` if the model drifts (an out-of-order index, or too many/too few lines — a merged or
+  renumbered line would otherwise shift every later segment), and the server numbers results by
+  arrival (`{"i": len(collected)}`). A drifted stream therefore errors instead of being shown or
+  cached. A failed batch falls back to the source text for its range so it cannot stall the
+  frontier. Every AI call is bounded by a per-backend semaphore in `app/ai.py`
   sized by the same concurrency setting, which also covers summary/anatomy. A rate limit
   (`RateLimitError`, HTTP 429, or a stream line with `rate_limited`) stops the remaining
   batches and leaves source text; the user lowers concurrency in Settings if it repeats. The server stays generic (it
@@ -114,10 +119,11 @@ Requires Claude Code (`claude`, signed in) or Hermes (`hermes setup`). Pick one 
   FIRST translated sentence is painted (`S.onFirstPaint`) and a few pages of layout are
   buffered (`waitLayout`) — it does not wait for the whole first page or the whole document;
   translation and layout prewarm keep running in the background after the reveal.
-- **Each Task has its own model** (`DEFAULT_MODELS` in `app/settings.py`). Claude Code:
-  `claude-haiku-5-5` for translation, equations, and the glossary; `sonnet` for the rest.
-  Hermes: `gpt-6-luna` and `gpt-6.1-sol` the same way. NOTE: the bare `haiku` alias in
-  the Claude CLI still resolves to Haiku 4.5, so the explicit id is used to get 5.5.
+- **Each Task has its own model** (`DEFAULT_MODELS` in `app/settings.py`). Claude Code uses
+  `sonnet` for every task (it follows the per-segment translation contract far more reliably
+  than haiku). Hermes uses `gpt-6-luna` for translation, equations, and the glossary, and
+  `gpt-6.1-sol` for the rest. NOTE: the bare `haiku` alias in the Claude CLI still resolves to
+  Haiku 4.5, so if you ever set a Haiku model use the explicit `claude-haiku-5-5` id.
 - **A per-paper translation glossary ("brief") is injected into every page.**
   `translate_brief()` reads just the front matter (`brief_source()`: title +
   abstract + intro) on the glossary Task's fast model and returns the paper's field,

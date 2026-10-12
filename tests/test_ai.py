@@ -73,11 +73,30 @@ class AiTests(unittest.IsolatedAsyncioTestCase):
         await asyncio.gather(*(ai.explain("x") for _ in range(6)))
         self.assertEqual(fake.peak, 2)
 
-    async def test_translate_stream_maps_by_model_index_and_tolerates_gaps(self):
-        fake = FakeBackend(deltas=["1\t가\n3", "\t다\n", "no index line\n"])
+    async def test_translate_stream_yields_strings_in_order(self):
+        fake = FakeBackend(deltas=["1\t가\n2\t", "나\n", "3\t다\n"])
         self.use(fake)
         out = [x async for x in ai.translate_stream(["a", "b", "c"], "Korean")]
-        self.assertEqual(out, [(0, "가"), (2, "다"), (None, "no index line")])
+        self.assertEqual(out, ["가", "나", "다"])
+
+    async def test_translate_stream_raises_on_out_of_order_index(self):
+        # A merged/renumbered line (index 3 where 2 is expected) must error, not misalign.
+        fake = FakeBackend(deltas=["1\t가\n3\t다\n"])
+        self.use(fake)
+        got = []
+        with self.assertRaises(AIError):
+            async for item in ai.translate_stream(["a", "b", "c"], "Korean"):
+                got.append(item)
+        self.assertEqual(got, ["가"])
+
+    async def test_translate_stream_raises_when_a_segment_is_missing(self):
+        fake = FakeBackend(deltas=["1\t가\n"])  # only 1 of 2 segments
+        self.use(fake)
+        got = []
+        with self.assertRaises(AIError):
+            async for item in ai.translate_stream(["a", "b"], "Korean"):
+                got.append(item)
+        self.assertEqual(got, ["가"])
 
     async def test_rate_limit_in_stream_is_reported_not_retried(self):
         fake = FakeBackend(deltas=["1\t가\n"], error=RateLimitError("limit"))
@@ -86,7 +105,7 @@ class AiTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(RateLimitError):
             async for item in ai.translate_stream(["a", "b"], "Korean"):
                 got.append(item)
-        self.assertEqual(got, [(0, "가")])
+        self.assertEqual(got, ["가"])
         self.assertEqual(len(fake.calls), 1)
 
     async def test_equation_sends_image_inline_and_strips_fences(self):
@@ -114,7 +133,7 @@ class AiTests(unittest.IsolatedAsyncioTestCase):
         with patch("app.ai.settings.load", return_value=settings_for("claude")):
             claude_tag = ai.cache_tag("translate")
         self.assertEqual(hermes_tag, "hermes-gpt-6-luna")
-        self.assertEqual(claude_tag, "claude-claude-haiku-5-5")
+        self.assertEqual(claude_tag, "claude-sonnet")
         s = settings_for("hermes")
         s["models"]["hermes"]["summary"] = "openai/gpt:x"
         with patch("app.ai.settings.load", return_value=s):
