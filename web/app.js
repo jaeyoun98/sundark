@@ -1030,6 +1030,22 @@ function setChatCite(text) {
 function clearChatCite() { chatCite = null; $("chatcite-text").textContent = ""; $("chatcite").classList.add("hidden"); }
 $("chatcite-x").addEventListener("click", clearChatCite);
 
+// Enter adds a line; Cmd/Ctrl+Enter sends. Not while an IME (e.g. Korean) is still composing,
+// or the Enter that commits the last syllable would send a half-typed question.
+$("chatinput").addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && !e.isComposing) {
+    e.preventDefault();
+    $("chatform").requestSubmit();
+  }
+});
+$("chatinput").addEventListener("input", fitChatInput);
+// Grow the box with its text; CSS max-height caps it and it scrolls from there.
+function fitChatInput() {
+  const el = $("chatinput");
+  el.style.height = "auto";
+  el.style.height = el.scrollHeight + (el.offsetHeight - el.clientHeight) + "px";
+}
+
 $("chatform").addEventListener("submit", async (e) => {
   e.preventDefault();
   const input = $("chatinput");
@@ -1037,6 +1053,7 @@ $("chatform").addEventListener("submit", async (e) => {
   const cite = chatCite;
   if ((!q && !cite) || !S.docId) return;
   input.value = "";
+  fitChatInput();
   clearChatCite();
 
   const userMsg = addMsg("user", q || "(선택한 부분에 대해)");
@@ -1088,6 +1105,7 @@ $("btn-ask").addEventListener("click", () => {
   setChatCite(lastSelection);                               // show as a citation block
   document.querySelector('.tab[data-tab="chat"]').click();  // auto-switch to Chat
   $("chatinput").value = "";
+  fitChatInput();
   $("chatinput").focus();
 });
 
