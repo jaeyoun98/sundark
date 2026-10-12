@@ -24,7 +24,7 @@ const S = {
 class RateLimited extends Error {}
 
 const TASK_LABELS = { translate: "Translation", summary: "Summary", anatomy: "Anatomy",
-  chat: "Chat", explain: "Explain", equation: "Equations", brief: "Glossary" };
+  chat: "Chat", explain: "Explain", equation: "Equations", brief: "Glossary", review: "Review" };
 
 function showRateLimit() {
   $("ai-banner").textContent = "구독 사용 한도에 도달했습니다. 남은 번역은 원문으로 표시합니다. 잠시 후 다시 번역하세요.";
@@ -138,6 +138,7 @@ $("file").addEventListener("change", async (e) => {
   try {
     const meta = await postForm("/api/upload", fd);
     await openDoc(meta);
+    loadLibrary();  // the upload is now also saved under papers/, so refresh the list
   } catch (err) { setTitle("Upload failed: " + err.message); }
 });
 
@@ -162,6 +163,7 @@ async function openDoc(meta) {
   $("chatlog").innerHTML = "";
   S.summaryLoaded = false;
   S.anatomyLoaded = false; S.anatomyModel = null;
+  updateReviewBtn();
   $("anatomy").innerHTML = '<p class="hint" style="padding:6px">Open the Anatomy tab to analyze the paper (grounded in the source).</p>';
 
   S.pdf = await pdfjsLib.getDocument("/api/pdf/" + meta.doc_id).promise;
@@ -749,6 +751,7 @@ async function loadAnatomy(force) {
     box.innerHTML = '<p class="loading" style="padding:6px">Error: ' + err.message + "</p>";
   } finally {
     S.anatomyLoading = false;
+    updateReviewBtn();
   }
 }
 $("re-anatomy").addEventListener("click", () => { S.anatomyLoaded = false; loadAnatomy(true); });
@@ -836,8 +839,45 @@ async function genSummary() {
     S.summaryLoaded = false;
     $("summary").innerHTML = '<p class="loading">Error: ' + err.message + "</p>";
   }
+  updateReviewBtn();
 }
 $("gen-summary").addEventListener("click", () => { S.summaryLoaded = false; genSummary(); });
+
+// The review combines summary + anatomy (+ chat), so enable the button only once both are
+// generated — in the normal flow their caches are then guaranteed to exist.
+function updateReviewBtn() {
+  const btn = $("export-review");
+  const ready = S.summaryLoaded && S.anatomyLoaded;
+  btn.disabled = !ready;
+  btn.title = ready
+    ? "요약·구조분석·채팅을 종합한 리뷰 노트를 zip으로 내려받기"
+    : "요약과 구조분석(Anatomy)을 먼저 생성하면 활성화됩니다";
+}
+
+$("export-review").addEventListener("click", async () => {
+  if (!S.docId) return;
+  const btn = $("export-review"), label = btn.textContent;
+  btn.disabled = true; btn.textContent = "생성 중…";
+  try {
+    const res = await fetch(`/api/review/${S.docId}`, { method: "POST" });
+    if (!res.ok) {
+      const d = await res.json().catch(() => ({}));
+      if (d.rate_limited) showRateLimit();
+      throw new Error(d.detail || res.statusText);
+    }
+    const blob = await res.blob();
+    const m = (res.headers.get("Content-Disposition") || "").match(/filename="?([^"]+)"?/);
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = m ? m[1] : "review.zip";
+    document.body.appendChild(a); a.click(); a.remove();
+    URL.revokeObjectURL(a.href);
+  } catch (e) {
+    alert("리뷰 생성 실패: " + e.message);
+  } finally {
+    btn.disabled = false; btn.textContent = label;
+  }
+});
 
 async function loadChat() {
   $("chatlog").innerHTML = "";
