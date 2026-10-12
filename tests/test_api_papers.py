@@ -196,3 +196,18 @@ class PaperApiTests(unittest.TestCase):
             self.upload(citing)  # opening it validates and rejects the cited DOI
             names = [p["name"] for p in self.client.get("/api/papers").json()["papers"]]
         self.assertNotIn(TITLE, names)
+
+    def test_docs_extracted_by_an_older_version_are_re_extracted(self):
+        pdf = make_pdf([PAGE])
+        with patch("app.main.biblio.lookup", new=AsyncMock(return_value=RECORD)):
+            meta = self.upload(pdf)
+        doc = store.load_doc(meta["doc_id"])
+        doc["pages"] = ["stale text ~1!"]
+        del doc["meta"]["text_version"]
+        store.save_doc(meta["doc_id"], doc)
+        with patch("app.main.biblio.lookup", new=AsyncMock(return_value=RECORD)):
+            again = self.upload(pdf)
+        fresh = store.load_doc(meta["doc_id"])
+        self.assertNotEqual(fresh["pages"], ["stale text ~1!"])
+        self.assertEqual(fresh["meta"]["paper_id"], meta["paper_id"])
+        self.assertEqual(again["paper_id"], meta["paper_id"])

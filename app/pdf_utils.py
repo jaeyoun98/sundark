@@ -18,7 +18,7 @@ def extract(pdf_bytes: bytes) -> dict:
     """
     doc = pymupdf.open(stream=pdf_bytes, filetype="pdf")
     try:
-        pages = [page.get_text("text") for page in doc]
+        pages = [_page_text(page) for page in doc]
         title = _title_from_fonts(doc[0]) if doc.page_count else ""
         if not title:
             meta = doc.metadata or {}
@@ -28,6 +28,7 @@ def extract(pdf_bytes: bytes) -> dict:
             "meta": {
                 "title": title or "Untitled paper",
                 "num_pages": len(pages),
+                "text_version": TEXT_VERSION,
             },
         }
     finally:
@@ -171,6 +172,69 @@ _ENUM_ABBR = re.compile(
 # them — otherwise they leak into a sentence as a fragment like "0 , σ 2 I \x01".
 _CTRL_STRIP = {c: None for c in range(0x20) if c not in (0x09, 0x0A, 0x0D)}
 _CTRL_STRIP[0x7F] = None
+
+# AIP/APS journals (1990s-2000s) set math in "Universal-GreekwithMathPi", whose text layer
+# reuses ASCII codes for the glyphs it draws: "~1!" is "(1)", "D" is "Δ". Read off rendered
+# glyphs in real PDFs; codes not seen there stay as they are rather than being guessed.
+_MATHPI_FONT = "Universal-GreekwithMath"
+_MATHPI = str.maketrans(
+    {
+        "~": "(",
+        "!": ")",
+        "@": "[",
+        "#": "]",
+        "^": "⟨",
+        "&": "⟩",
+        "<": "≤",
+        ">": "≥",
+        "`": "∞",
+        ";": "∼",
+        "a": "α",
+        "d": "δ",
+        "e": "ϵ",
+        "«": "ε",
+        "f": "φ",
+        "g": "γ",
+        "h": "η",
+        "j": "ξ",
+        "l": "λ",
+        "m": "μ",
+        "r": "ρ",
+        "s": "σ",
+        "t": "τ",
+        "u": "θ",
+        "w": "ϕ",
+        "x": "χ",
+        "z": "ζ",
+        "C": "Ψ",
+        "D": "Δ",
+        "F": "Φ",
+        "S": "Σ",
+        "V": "Ω",
+    }
+)
+
+# Bump when extract() changes what it returns, so stored docs are re-extracted on next open.
+TEXT_VERSION = 2
+
+
+def _decode_span(span: dict) -> str:
+    """A span's text with the MathPi font's borrowed ASCII codes mapped to what it draws."""
+    text = span.get("text", "")
+    return text.translate(_MATHPI) if _MATHPI_FONT in span.get("font", "") else text
+
+
+def _page_text(page) -> str:
+    """Plain page text; pages using the MathPi font are rebuilt from decoded spans."""
+    if not any(_MATHPI_FONT in f[3] for f in page.get_fonts()):
+        return page.get_text("text")
+    lines = []
+    for block in page.get_text("dict").get("blocks", []):
+        if block.get("type") != 0:
+            continue
+        for line in block.get("lines", []):
+            lines.append("".join(_decode_span(sp) for sp in line.get("spans", [])))
+    return "".join(line + "\n" for line in lines)
 
 
 def _split_on_bullets(raw: list[tuple[int, int]], text: str) -> list[tuple[int, int]]:
@@ -376,7 +440,7 @@ def _words_with_style(page) -> list[dict]:
             continue
         for lno, line in enumerate(block.get("lines", [])):
             for span in line.get("spans", []):
-                stext = span.get("text", "")
+                stext = _decode_span(span)
                 if not stext.strip():
                     continue
                 size = span.get("size", 0.0)

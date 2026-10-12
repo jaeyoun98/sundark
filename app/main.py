@@ -71,6 +71,14 @@ async def _ingest(data: bytes, zotero: dict | None = None) -> dict:
         extracted = pdf_utils.extract(data)  # may raise; caller converts to HTTP error
         store.save_pdf(doc_id, data)
         store.save_doc(doc_id, extracted)
+    elif extracted["meta"].get("text_version", 1) < pdf_utils.TEXT_VERSION:
+        # Re-extract text a previous version got wrong (e.g. MathPi "~1!"), keeping identity.
+        fresh = pdf_utils.extract(data)
+        fresh["meta"]["paper_id"] = extracted["meta"].get("paper_id")
+        if fresh["meta"]["paper_id"] is None:
+            del fresh["meta"]["paper_id"]
+        extracted = fresh
+        store.save_doc(doc_id, extracted)
     pid = extracted["meta"].get("paper_id")
     unresolved = (
         pid and pid.split(":")[0] in ("doi", "arxiv") and store.paper_get(pid) is None
@@ -222,8 +230,9 @@ _layout_lock = asyncio.Lock()
 # precision on the .tex eval — so heading detection stays pure title-box. v5: strip C0/DEL control
 # characters (PDF math bracket delimiters) from word tokens. v6: rejoin same-baseline line
 # fragments the PDF split around inline math. v7: also rejoin a raised/lowered glyph fragment
-# such as a radical, and measure line gaps on median glyph extents.)
-_LAYOUT_VERSION = 7
+# such as a radical, and measure line gaps on median glyph extents. v8: decode the AIP/APS
+# MathPi font, whose text layer reads "~1!" for "(1)".)
+_LAYOUT_VERSION = 8
 
 
 def _page_layout_cached(doc_id: str, page: int) -> dict:
