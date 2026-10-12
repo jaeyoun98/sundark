@@ -148,7 +148,7 @@ def warm_sentence_model() -> bool:
 # Paper abbreviations pysbd misses (merge a sentence that ends with one into the next).
 _ABBR_TAIL = re.compile(
     r"\b(Eq|Eqs|Eqn|Fig|Figs|Sec|Secs|Tab|Tabs|Alg|Thm|Lem|Cor|Prop|Def|No|Ref|Refs"
-    r"|Ch|App|Appx|vs|cf|al|e\.g|i\.e)\.$",
+    r"|Ch|App|Appx|vs|cf|al|e\.g|i\.e)\s?\.$",
     re.IGNORECASE,
 )
 
@@ -243,6 +243,10 @@ def _split_on_bullets(raw: list[tuple[int, int]], text: str) -> list[tuple[int, 
     for s, e in raw:
         last = s
         for i in range(s + 1, e):  # not at the very start
+            # '◦' doubles as the degree / composition sign ('90 ◦', 'F Θ ◦ γ'): a bullet
+            # only after the end of a clause
+            if text[i] == "◦" and text[s:i].rstrip()[-1:] not in ".:;!?)":
+                continue
             if text[i] in _BULLET_CHARS:
                 if text[last:i].strip():
                     out.append((last, i))
@@ -250,6 +254,44 @@ def _split_on_bullets(raw: list[tuple[int, int]], text: str) -> list[tuple[int, 
         if text[last:e].strip():
             out.append((last, e))
     return out
+
+
+def _mend_word_splits(raw: list[tuple[int, int]], text: str) -> list[tuple[int, int]]:
+    """Undo a boundary the segmenter put INSIDE a PDF word. spaCy splits punctuation off, so it
+    can end a sentence inside a word like ');' in 'Ho et al. ( 2020 ); Nichol and ...' or '5:'
+    in 'Table 5: Per-scene ...': the word then maps to BOTH sentences (highlighted twice) and
+    the next fragment opens with ';' or ':'. Such a boundary is not a sentence end, so the two
+    fragments are merged - unless the rest of the word is sentence-final punctuation ('065).'),
+    where the boundary moves to the word's end, or the word glues two sentences together
+    ('increases.The'), which is left as it is. A dotted name ('Ljavax.crypto.|Cipher') is one
+    token, not two sentences, so it is merged."""
+    out: list[list[int]] = []
+    for s, e in raw:
+        if (
+            out
+            and out[-1][1] == s
+            and 0 < s < len(text)
+            and not text[s - 1].isspace()
+            and not text[s].isspace()
+        ):
+            we = s
+            while we < len(text) and not text[we].isspace():
+                we += 1
+            tail = text[s:we]
+            if not any(c.isalnum() for c in tail) and re.search(r"[.!?]", tail):
+                out[-1][1] = min(we, e)
+                if text[we:e].strip():
+                    out.append([we, e])
+                else:
+                    out[-1][1] = e
+                continue
+            head = text[out[-1][0] : s]
+            dotted = "." in head.split()[-1][:-1] if head.split() else False
+            if dotted or not (_ends_sentence(head) and tail[:1].isupper()):
+                out[-1][1] = e
+                continue
+        out.append([s, e])
+    return [(s, e) for s, e in out]
 
 
 def _starts_lower_frag(text: str, span: tuple[int, int]) -> bool:
@@ -265,11 +307,120 @@ def _starts_lower_frag(text: str, span: tuple[int, int]) -> bool:
     return c.isalpha() and c.islower() and c.isascii()
 
 
+# A fragment that begins with a binary math operator ("= 64", "· d", "− 1") is usually the tail
+# of an inline expression the segmenter broke ("...representations z" | "= (z_1, ..., z_n)"):
+# the spaced-out PDF glyphs put the operator at the start of the next fragment, and merging it
+# back rejoins the expression. The true minus U+2212 is included; the ASCII hyphen is
+# deliberately NOT, since a leading "-" is more often a dash list item than math.
+_MATH_CONT_START = frozenset("=+/·⋅×⊙∥≈≠≤≥<>±∼→←⇒∈∝≡−")
+# ...but an operator-like label followed by a capitalized word ("− We propose ...",
+# "· We evaluate ...") is a list item, not math.
+_LIST_LABEL = re.compile(r"[−·⋅+→]\s+[A-Z][a-z]")
+
+
+def _starts_lower_any(text: str, span: tuple[int, int]) -> bool:
+    """Any lowercase letter, not only ASCII: a Greek symbol ('2 . 5' + 'σ level.') or a PDF
+    ligature glyph ('the Ricci' + 'ﬂow whenever ...'). Used only after an unfinished fragment,
+    since a sentence may open with a Greek symbol ('σ is the noise level.')."""
+    frag = text[span[0] : span[1]].lstrip()
+    c = frag[:1]
+    return c.isalpha() and c.islower() and not _ENUM_RE.match(frag)
+
+
+def _starts_math_cont(text: str, span: tuple[int, int]) -> bool:
+    frag = text[span[0] : span[1]].lstrip()
+    return frag[:1] in _MATH_CONT_START and not _LIST_LABEL.match(frag)
+
+
+# An inline author-year citation ("Ronneberger et al. (2015)", "Perez et al. (2018)",
+# "Smith and Jones (2020)", "Müller (2014)") confuses the segmenter, which starts a new sentence
+# at the author name. Following an unfinished fragment, it is a continuation and is merged back.
+# A name followed by a parenthesized 19xx/20xx year is what makes this specific; a capitalized
+# function word ("In ( 2015 ), ...") is not a name.
+_NAME = r"[A-ZÀ-ÖØ-Þ](?:[^\W\d_]|['’.-])+"
+_CITATION_START = re.compile(
+    _NAME
+    + r"(?:\s+(?:et\s+al\.?|and\s+"
+    + _NAME
+    + r"|&\s*"
+    + _NAME
+    + r"))?\s*\(\s*(?:19|20)\d{2}[a-z]?\b"
+)
+_NOT_AUTHOR = frozenset(
+    "In On At By For From Since Until After Before During As See".split()
+)
+
+
+def _starts_citation(text: str, span: tuple[int, int]) -> bool:
+    # Look past the fragment's end: the segmenter may also have split after "et al.", leaving
+    # the year in the following fragment (which _ABBR_TAIL then joins).
+    head = text[span[0] : span[0] + 120].lstrip()
+    return bool(_CITATION_START.match(head)) and head.split()[0] not in _NOT_AUTHOR
+
+
+# A lone capital math symbol that the segmenter took for a sentence start: the running text
+# ends, unfinished, on a math token (a single letter, a Greek letter or a small number) and the
+# next fragment starts with a single capital letter followed by a lowercase word
+# ("Starting from x" + "K sampled from Gaussian noise" for x^K; "N(0, σ 2" + "I is Gaussian
+# noise" for σ²I). "Table 2" / "Fig. 3" / "Section 4" style references are not math tails.
+_MATH_TAIL = re.compile(r"(?:^|\s)(?:[A-Za-z]|[\u0370-\u03ff]|\d{1,2})$")
+_REF_WORD = re.compile(
+    r"(?:Table|Tab|Figure|Fig|Section|Sec|Eq|Eqn|Equation|Appendix|App|Algorithm|Alg|Step|Stage|Part)"
+    r"\.?\s+\d{1,2}$",
+    re.IGNORECASE,
+)
+
+
+# A capital letter standing alone before an operator, number, symbol or another capital
+# ("A − QQ ∗ A ∥", "O ( N − 2 )", "L 2 norm", "C + B") is a math symbol whatever precedes it.
+# "A"/"I" qualify only before an operator or punctuation, since "A 2D map ..." opens a sentence;
+# a capital before a lowercase word ("T cells", "N dx") is left to the math-tail rule above.
+_CAP_SYMBOL = re.compile(r"(?:[B-HJ-Z]\s+(?![a-z]{2})|[AI]\s+(?=[^\w\s])|[A-Z]\s*$)")
+
+
+def _lone_capital_after_math(t: str, text: str, span: tuple[int, int]) -> bool:
+    frag = text[span[0] : span[1]].lstrip()
+    if _CAP_SYMBOL.match(frag):
+        return True
+    return (
+        bool(re.match(r"[A-Z]\s+[a-z]", frag))
+        and bool(_MATH_TAIL.search(t))
+        and not _REF_WORD.search(t)
+    )
+
+
+# A fragment opening with '[' - a citation ('[41]', '[H 1]', '[71, § 14.5]') or an interval
+# ('[0 , T )') - continues an unfinished sentence: spaCy starts a new sentence there, but a
+# sentence never opens with a bracket.
+def _starts_bracket(text: str, span: tuple[int, int]) -> bool:
+    return text[span[0] : span[1]].lstrip()[:1] == "["
+
+
+# Likewise a '(' that is not a list marker ('( p k , r k )' after 'B', '(middle) shows' after
+# 'Fig. 6'); '(a)', '(ii)', '(3)' items stay split.
+def _starts_paren(text: str, span: tuple[int, int]) -> bool:
+    frag = text[span[0] : span[1]].lstrip()
+    m = _ENUM_RE.match(frag)
+    return frag[:1] == "(" and not (m and _is_enum_label(m.group(2)))
+
+
+# Closing or connective punctuation never opens a sentence: '; Nichol ...', ', Hamilton
+# proved', ': Per-scene results', '| 2 ) dm', '’s predicted', ') 3 He'.
+_CLOSE_START = frozenset(",;:.)]}%|’′″")
+
+
+def _starts_closing(text: str, span: tuple[int, int]) -> bool:
+    return text[span[0] : span[1]].lstrip()[:1] in _CLOSE_START
+
+
 def _merge_fragments(
     raw: list[tuple[int, int]], text: str
 ) -> list[tuple[int, int, str]]:
-    """Merge lone section numbers, trailing paper-abbreviations, and lowercase-starting
-    over-split fragments (inline math) into the sentence they belong to."""
+    """Merge lone section numbers, trailing paper-abbreviations, and over-split fragments into
+    the sentence they belong to. An over-split continuation is a fragment that starts lowercase
+    (spaced inline math), or - while the running text is not yet a complete sentence - one that
+    starts with a binary math operator ("...z" + "= (z_1, ..., z_n).") or an inline author-year
+    citation ("...(FiLM)" + "Perez et al. (2018) ...")."""
     out: list[tuple[int, int, str]] = []
     i = 0
     while i < len(raw):
@@ -281,6 +432,17 @@ def _merge_fragments(
                 re.fullmatch(r"\d+(\.\d+)*\.?", t)
                 or _ABBR_TAIL.search(t)
                 or len(t) <= 2
+                # a short label ("Right:", "Figure 13:") introduces the capitalized sentence
+                # after it; a list item ("1) ...", "(A) ...", "− We ...", "• ...") stays split
+                or (
+                    t.endswith(":")
+                    and len(t.split()) <= 3
+                    and text[raw[i + 1][0] : raw[i + 1][1]].lstrip()[:1].isupper()
+                    and not _ENUM_RE.match(text[raw[i + 1][0] : raw[i + 1][1]].lstrip())
+                )
+                # a bare letter/roman list marker ("(A)" + "The shortcut ...") labels the
+                # item after it ("(21)" alone is as often an equation number: left alone)
+                or _is_marker_only(t, text[raw[i + 1][0] : raw[i + 1][1]].lstrip())
                 # decimal split from spaced glyphs, e.g. "82 ." + "1%" -> keep together
                 or (
                     re.search(r"\d\s*\.$", t)
@@ -288,6 +450,33 @@ def _merge_fragments(
                 )
                 # the NEXT fragment starts lowercase -> it continues this sentence
                 or _starts_lower_frag(text, raw[i + 1])
+                # this fragment ends inside a hyphenated compound split by a line break
+                # ("LIBERO-" + "Long", "GPT-" + "5.6 Sol", "base-" + "Λ CDM")
+                or re.search(r"[^\W_]-$", t)
+                # a sentence never ends on ',' or ';' ("( Holz & Hughes 2005 ;" + "Abbott et
+                # al. 2017", "In his seminal paper ," + "Hamilton proved") - but an enumeration
+                # item or bullet after it stays split
+                or (
+                    t[-1:] in ",;"
+                    and not _ENUM_RE.match(text[raw[i + 1][0] : raw[i + 1][1]].lstrip())
+                    and text[raw[i + 1][0] : raw[i + 1][1]].lstrip()[:1]
+                    not in _BULLET_CHARS
+                )
+                # the NEXT fragment starts with a math operator ("= 64", "− 1") or an inline
+                # citation ("Perez et al. (2018)") while this one is not a finished sentence ->
+                # the segmenter broke mid-sentence
+                or (
+                    not _ends_sentence(t)
+                    and (
+                        _starts_math_cont(text, raw[i + 1])
+                        or _starts_citation(text, raw[i + 1])
+                        or _lone_capital_after_math(t, text, raw[i + 1])
+                        or _starts_lower_any(text, raw[i + 1])
+                        or _starts_closing(text, raw[i + 1])
+                        or _starts_paren(text, raw[i + 1])
+                        or _starts_bracket(text, raw[i + 1])
+                    )
+                )
             )
         ):
             i += 1
@@ -296,6 +485,16 @@ def _merge_fragments(
         out.append((s, e, t))
         i += 1
     return out
+
+
+def _is_marker_only(t: str, nxt: str) -> bool:
+    m = _ENUM_RE.fullmatch(t)
+    return (
+        bool(m)
+        and not m.group(2).isdigit()
+        and _is_enum_label(m.group(2))
+        and not _ENUM_RE.match(nxt)
+    )
 
 
 def _is_enum_label(lab: str) -> bool:
@@ -317,6 +516,9 @@ def _enum_candidates(text: str) -> list[tuple[int, tuple[bool, str]]]:
         if before.isalnum() or before in "-.":  # 2(a), III-A), decimal 0.5)
             continue
         if m.group(1) and _ENUM_ABBR.search(text[:i]):  # Eqn.(1), Fig. (3)
+            continue
+        win = text[max(0, i - 80) : i]
+        if not m.group(1) and win.count("(") > win.count(")"):  # closes 'R ( z , 0)'
             continue
         out.append((i, (bool(m.group(1)), "digit" if lab.isdigit() else "alpha")))
     return out
@@ -378,13 +580,26 @@ def _split_sentences(text: str) -> list[tuple[int, int, str]]:
             for m in re.finditer(r".*?(?:[.!?][\"')\]]?(?=\s|$)|$)", text)
             if m.group().strip()
         ]
+    raw = _mend_word_splits(raw, text)
     return _merge_fragments(_split_on_markers(_split_on_bullets(raw, text), text), text)
 
 
-def _keep_sentence(text: str, word_count: int) -> bool:
+def _keep_sentence(text: str, word_count: int, context: int = 0) -> bool:
     """Keep prose and section headings; drop figure/diagram labels and scattered tokens
-    (short fragments with no sentence punctuation, e.g. 'Conv1D', 'Cross Attention')."""
+    (short fragments with no sentence punctuation, e.g. 'Conv1D', 'Cross Attention').
+    `context` rescues short prose that this filter would drop. 2: the paragraph also holds a
+    full sentence, so a fragment with any word (two letters in a row) is kept - a lead-in cut
+    off by a display equation ('Then we have'), a list intro ('We show that:'), a page tail
+    ('In addition, high-'). 1: the paragraph sits next to a display equation, so a fragment
+    with a lowercase word is kept ('where', 'we get'). Figure labels form paragraphs of their
+    own, away from equations, and are still dropped."""
     if word_count >= 5:
+        return True
+    if context == 2 and re.search(r"[^\W\d_]{2}", text):
+        return True
+    if context == 1 and any(
+        w.isalpha() and w.islower() and len(w) > 1 for w in text.split()
+    ):
         return True
     if re.search(r"[.!?][\"')\]]?$", text):  # ends like a sentence
         return True
@@ -602,7 +817,9 @@ def _in_rects(cx: float, cy: float, rects: list) -> bool:
 
 
 def _ends_sentence(text: str) -> bool:
-    return bool(re.search(r"[.!?][\"')\]]?$", text.strip()))
+    """Terminal punctuation, optionally followed by closing quotes/brackets (straight, curly, or
+    spaced apart by the PDF: ". )") and a footnote mark ("available.1", ".†")."""
+    return bool(re.search(r"[.!?](?:\s*[\"'”’)\]])*(?:\d{1,2}|[*∗†‡])?$", text.strip()))
 
 
 def _starts_lower(text: str) -> bool:
@@ -624,7 +841,8 @@ def _tail_unfinished(page: dict) -> bool:
     t = last["text"].rstrip()
     if not t or _ends_sentence(t):
         return False
-    return t[-1].islower() or t[-1] == ","
+    # ...or a word the page break split with a hyphen ("to extract fea-" + "tures from")
+    return t[-1].islower() or t[-1] == "," or bool(re.search(r"[^\W\d_]-$", t))
 
 
 def _continuation_idx(page: dict, max_scan: int = 16) -> int | None:
@@ -635,13 +853,57 @@ def _continuation_idx(page: dict, max_scan: int = 16) -> int | None:
     wide enough to clear such a block. But a heading STOPS the scan (returns None): a new section
     cannot be the continuation of the previous page's dangling sentence. Equations are skipped.
     Returns None if there is no such sentence."""
-    for j, s in enumerate(page["sentences"][:max_scan]):
+    seen = 0
+    for j, s in enumerate(page["sentences"]):
         if s.get("heading"):
             return None  # a new section starts before any continuation → no stitch
+        if s.get("caption"):
+            continue  # inside a model caption box: never the continuation, not counted
+        if seen >= max_scan:
+            return None
+        seen += 1
         if s.get("equation"):
             continue
+        prev_para = page["sentences"][j - 1].get("para") if j else None
+        if prev_para is not None and prev_para == s.get("para"):
+            continue  # mid-paragraph: not where a wrapped sentence resumes
         if _starts_lower(s["text"]):
             return j
+    return None
+
+
+def _tail_open(page: dict) -> bool:
+    """True when a page's last sentence is prose that does not end a sentence at all (no .!? and
+    no closing colon). Wider than _tail_unfinished: it also admits a tail closing on ')' or an
+    uppercase acronym ("...Modulation (FiLM)"), which may only be stitched to a citation."""
+    if not page["sentences"]:
+        return False
+    last = page["sentences"][-1]
+    if last.get("heading") or last.get("equation"):
+        return False
+    t = last["text"].rstrip()
+    return bool(t) and not _ends_sentence(t) and not t.endswith(":")
+
+
+def _stitch_idx(prev: dict, nxt: dict) -> int | None:
+    """Index of the sentence on `nxt` that continues the last sentence of `prev`, or None. Used by
+    BOTH the forward and the backward pass, so the two pages always agree. Besides the lowercase
+    continuation (_tail_unfinished + _continuation_idx), a sentence the page break cut right before
+    an inline author-year citation ("...Modulation (FiLM)" | "Perez et al. (2018) as well as ...")
+    is joined: the next page's FIRST prose sentence (no float caption skipped) must start with
+    such a citation, which a new sentence practically never does after an open tail."""
+    if _tail_unfinished(prev):
+        j = _continuation_idx(nxt)
+        if j is not None:
+            return j
+    if _tail_open(prev):
+        for j, s in enumerate(nxt["sentences"]):
+            if s.get("equation"):
+                continue
+            if s.get("heading"):
+                return None
+            t = s["text"]
+            return j if _starts_citation(t, (0, len(t))) else None
     return None
 
 
@@ -655,9 +917,11 @@ def layout(
     page break is kept whole on the page where it STARTS: that page absorbs the continuation
     fragment from the next page (recording its geometry under `words_next` so a highlight can
     span both pages), and the next page drops that fragment so it is not shown or translated
-    twice. The continuation is found by the same rule from both sides (the previous page's
-    tail is unfinished, and this page's first lowercase-starting sentence is the continuation),
-    so the two pages always agree — even when a float caption sits between them."""
+    twice. The continuation is found by the same rule from both sides (`_stitch_idx`: the
+    previous page's tail is unfinished and this page's first lowercase-starting sentence is the
+    continuation, or the tail is open and this page's first prose sentence starts with an
+    author-year citation), so the two pages always agree — even when a float caption sits
+    between them."""
     core = _page_layout(pdf_bytes, page_index, headers, skip)
     doc = pymupdf.open(stream=pdf_bytes, filetype="pdf")
     try:
@@ -666,11 +930,11 @@ def layout(
         doc.close()
     # Forward runs BEFORE backward, so it tests this page's ORIGINAL tail — the same view the
     # next page's backward pass uses — keeping the two pages' decisions consistent. If our
-    # tail is unfinished, absorb the next page's continuation fragment so the sentence reads
+    # tail is open, absorb the next page's continuation fragment (if any) so the sentence reads
     # whole here.
-    if page_index + 1 < n and _tail_unfinished(core):
+    if page_index + 1 < n and _tail_open(core):
         nxt = _page_layout(pdf_bytes, page_index + 1, headers, skip)
-        j = _continuation_idx(nxt)
+        j = _stitch_idx(core, nxt)
         if j is not None:
             frag = nxt["sentences"][j]
             last = core["sentences"][-1]
@@ -685,14 +949,14 @@ def layout(
                 {k: nxt["words"][i][k] for k in ("x0", "y0", "x1", "y1")}
                 for i in frag["words"]
             ]
-    # Backward: if the previous page's (original) tail is unfinished, our continuation sentence
-    # belongs to that page — drop it here so it is not shown or translated twice.
+    # Backward: if the previous page's (original) tail continues onto this page, our
+    # continuation sentence belongs to that page — drop it here so it is not shown or
+    # translated twice.
     if page_index > 0 and core["sentences"]:
         prev = _page_layout(pdf_bytes, page_index - 1, headers, skip)
-        if _tail_unfinished(prev):
-            j = _continuation_idx(core)
-            if j is not None:
-                del core["sentences"][j]
+        j = _stitch_idx(prev, core)
+        if j is not None:
+            del core["sentences"][j]
     return core
 
 
@@ -790,6 +1054,7 @@ def _page_layout(
         regions = _rects({"figure", "table", "furniture"})
         keep_rects = _rects({"body", "title", "caption"})
         title_rects = _rects({"title"})
+        caption_rects = _rects({"caption"})
         formula_rects = _rects({"formula"})
 
         def _drop(w) -> bool:
@@ -1036,10 +1301,19 @@ def _page_layout(
                     )
                 continue
             text, local = _join_words(para["widx"], words)
-            for s, e, st in _split_sentences(text):
-                idxs = [g for (a, b, g) in local if a < e and b > s]
+            split = [
+                (st, [g for (a, b, g) in local if a < e and b > s])
+                for s, e, st in _split_sentences(text)
+            ]
+            near_eq = any(
+                paras[q].get("equation")
+                for q in (pid - 1, pid + 1)
+                if 0 <= q < len(paras)
+            )
+            context = 2 if any(len(ix) >= 5 for _, ix in split) else int(near_eq)
+            for st, idxs in split:
                 # headings/labels are always kept (shown as titles); body uses the filter
-                if idxs and (para["heading"] or _keep_sentence(st, len(idxs))):
+                if idxs and (para["heading"] or _keep_sentence(st, len(idxs), context)):
                     heights = [words[g]["y1"] - words[g]["y0"] for g in idxs]
                     size = round(statistics.median(heights), 1) if heights else 0
                     sentences.append(
@@ -1051,6 +1325,13 @@ def _page_layout(
                             "heading": para["heading"],
                         }
                     )
+                    w0 = words[idxs[0]]
+                    if _in_rects(
+                        (w0["x0"] + w0["x1"]) / 2,
+                        (w0["y0"] + w0["y1"]) / 2,
+                        caption_rects,
+                    ):
+                        sentences[-1]["caption"] = True
 
         return {
             "width": round(page.rect.width, 2),

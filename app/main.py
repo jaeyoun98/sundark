@@ -231,8 +231,12 @@ _layout_lock = asyncio.Lock()
 # characters (PDF math bracket delimiters) from word tokens. v6: rejoin same-baseline line
 # fragments the PDF split around inline math. v7: also rejoin a raised/lowered glyph fragment
 # such as a radical, and measure line gaps on median glyph extents. v8: decode the AIP/APS
-# MathPi font, whose text layer reads "~1!" for "(1)".)
-_LAYOUT_VERSION = 8
+# MathPi font, whose text layer reads "~1!" for "(1)". v9: split enumerated list items ("a)",
+# "(1)") into their own sentences; rejoin fragments the segmenter broke mid-sentence (inline
+# math, a citation, a bracket or parenthesis, closing punctuation, inside a word); keep short
+# prose by paragraph context; stitch page breaks before a citation or inside a hyphenated word,
+# skipping caption sentences.)
+_LAYOUT_VERSION = 9
 
 
 def _page_layout_cached(doc_id: str, page: int) -> dict:

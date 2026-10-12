@@ -165,11 +165,36 @@ Requires Claude Code (`claude`, signed in) or Hermes (`hermes setup`). Pick one 
   translatable.
 - **Sentences that wrap across a page break are stitched whole.** `layout()` keeps
   such a sentence on the page where it STARTS: that page absorbs the next page's
-  continuation fragment (its first lowercase-starting sentence, so a float caption
-  between the pages is skipped) and records its geometry under `words_next` for
-  cross-page highlighting; the next page drops that fragment. Both pages find the
-  continuation by the same rule, so they agree. `_page_layout()` is the per-page
-  core; `layout()` is the stitching wrapper that also peeks at the neighbours.
+  continuation fragment and records its geometry under `words_next` for cross-page
+  highlighting; the next page drops that fragment. Both pages decide with the same
+  rule (`_stitch_idx`), so they agree. The continuation is the first
+  lowercase-starting sentence that opens its paragraph; sentences inside a
+  model `caption` box are skipped and do not count toward the scan limit. A tail
+  ending in a hyphenated word ("fea-" | "tures") is rejoined, and a tail left open on
+  ")" or an acronym is stitched when the next page's first prose sentence starts with
+  an author-year citation ("...(FiLM)" | "Perez et al. (2018) as well as ...").
+  Known limit: when the real continuation starts uppercase ("the 34-layer" | "ResNet
+  reduces ..."), the rule can pick a later lowercase paragraph instead.
+  `_page_layout()` is the per-page core; `layout()` is the stitching wrapper that also
+  peeks at the neighbours.
+- **Over-split sentences are rejoined; list items are split.** spaCy breaks sentences
+  mid-way: at an inline math operator ("...z" | "= (z_1, ..., z_n)"), a citation
+  ("...(CNNs)" | "Ronneberger et al. (2015) ...", "VGG nets" | "[41] but"), a capital
+  math symbol ("... σ 2" | "I is ..."), a parenthesis, closing punctuation
+  (", Hamilton proved"), a line-broken compound ("LIBERO-" | "Long"), a spaced
+  abbreviation ("et al ."), or inside a PDF word ("( 2020 );", which then belonged to
+  two sentences and was highlighted with both). `_mend_word_splits` and
+  `_merge_fragments` rejoin those; the punctuation- and symbol-led rules apply only
+  while the running text is not a finished sentence (`_ends_sentence`, which also
+  accepts curly quotes, footnote marks and a spaced ". )"), so two real sentences are
+  not merged. Enumeration runs ("a) ... b) ... c)", "(1) ..., (2) ...") are split into
+  items by `_split_on_markers`; "Eqn.(1)" references and two-part subfigure phrases
+  ("show (a) X and (b) Y") are left whole. Short prose that `_keep_sentence` would drop
+  as a label (a lead-in before a display equation, "Then we have") is kept by
+  paragraph context. These rules were measured on 25 papers with no word lost or
+  duplicated. A sentence segmenter swap (Stanza, SaT) was measured and rejected: none
+  reliably splits comma-joined lists, and both are much slower (Stanza ran 8x slower
+  than spaCy on real per-paragraph calls).
 - **End matter is not translated, but the appendix is.** `end_matter_range()`
   finds the References/Acknowledgements/Funding span (page 0 is excluded so an
   author-funding footnote never triggers it) and returns a (start, end) range that
