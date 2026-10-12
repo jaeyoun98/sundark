@@ -14,6 +14,12 @@ Backend (Claude Code or Hermes) — never a billable API key.
 
 - **Only `app/backends/` starts AI processes**; `app/ai.py` owns every prompt. See
   *AI Backends* below.
+- **Paper ID vs File Fingerprint (ADR 0001).** `doc_id` is the File Fingerprint and keys every
+  cache derived from the file (layout, translation, summary, anatomy, equations). The Paper ID
+  (`app/paper_id.py`: `doi:`, `arxiv:`, `zotero:`, or `file:<doc_id>`) keys Chat History and
+  the translation glossary. `app/biblio.py` fetches the Bibliographic Record and rejects a
+  DOI whose record title is not on the first page (a cited work's DOI). Zotero integration
+  calls `main._ingest(data, {"key": ..., "doi": ...})`; Zotero's DOI wins.
 - **`app/pdf_utils.py`** turns a PDF page into word geometry + sentences:
   `get_text("dict")` for per-word position/size, margin filtering, region drop/
   heading/equation typing from the layout model's boxes (no font/stroke heuristics —

@@ -102,6 +102,15 @@ You can still **Upload PDF** from the top bar for one-off files.
 Results are cached per paper **and per AI Backend and model** under `data/`, so reopening is instant
 and doesn't re-spend usage. Text-based PDFs only (scanned images need OCR — not yet).
 
+### Paper identity and titles
+
+When you open a PDF, Paper Reader looks for its DOI or arXiv ID on the first two pages and
+fetches the title, authors, and year from CrossRef or arXiv. Only that identifier is sent. If
+there is no identifier or no internet, the title read from the PDF is used, and the next online
+open fills it in. Chat history follows the paper, not the file: an annotated copy or a newer
+arXiv version of the same paper continues the same chat. Translations are still cached per
+exact file.
+
 ## AI settings
 
 Click the **AI** badge in the top bar to choose the AI Backend (Claude Code or Hermes), a model
