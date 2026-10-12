@@ -71,3 +71,16 @@ class SettingsTests(unittest.TestCase):
             settings.save("claude", {"chat": "bad model id!"}, 8)
         with self.assertRaises(ValueError):
             settings.save("claude", {}, 0)
+
+    def test_saving_only_pins_models_that_differ_from_defaults(self):
+        settings.save("claude", {"chat": "opus"}, 8)
+        raw = json.loads(self.path.read_text(encoding="utf-8"))
+        self.assertEqual(raw["models"], {"claude": {"chat": "opus"}})
+        new_defaults = {
+            **settings.DEFAULT_MODELS,
+            "claude": {**settings.DEFAULT_MODELS["claude"], "summary": "opus-next"},
+        }
+        with patch.object(settings, "DEFAULT_MODELS", new_defaults):
+            s = settings.load()
+        self.assertEqual(settings.model_for(s, "claude", "summary"), "opus-next")
+        self.assertEqual(settings.model_for(s, "claude", "chat"), "opus")
