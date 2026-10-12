@@ -35,3 +35,6 @@ class FrontendTests(unittest.TestCase):
         self.assertNotIn("copy-tex", html)
         self.assertIn('document.addEventListener("copy"', js)
         self.assertIn('setData("text/html"', js)
+
+    def test_math_is_upgraded_per_page(self):
+        self.node("tests/frontend_math_per_page.test.js")

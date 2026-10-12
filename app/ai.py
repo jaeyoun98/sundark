@@ -13,8 +13,48 @@ from .errors import AIError
 _MATH_SYS = (
     "You transcribe the single mathematical expression shown in an image into LaTeX. Output "
     "ONLY the LaTeX body: no surrounding $ or \\[ \\], no code fences, no prose. Preserve "
-    "subscripts, superscripts, fractions, roots, sums, integrals and Greek letters exactly."
+    "subscripts, superscripts, fractions, roots, sums, integrals and Greek letters exactly. "
+    "If the expression spans several lines in the image, keep those lines: wrap them in "
+    "\\begin{aligned} ... \\end{aligned}, separate lines with \\\\, and put & before the "
+    "relation symbol each line aligns on."
 )
+
+_RELATIONS = (
+    "=",
+    "<",
+    ">",
+    "\\le",
+    "\\ge",
+    "\\ne",
+    "\\approx",
+    "\\equiv",
+    "\\sim",
+    "\\to",
+)
+
+
+def _align_first(line: str) -> str:
+    """Put & before the first relation outside braces, so the next lines align on it."""
+    depth = 0
+    for i, ch in enumerate(line):
+        depth += {"{": 1, "}": -1}.get(ch, 0)
+        if depth == 0 and ch == "=" and (i == 0 or line[i - 1] != "\\"):
+            return line[:i].rstrip() + " &" + line[i:]
+    return line
+
+
+def multiline_latex(latex: str) -> str:
+    """Make line breaks real. KaTeX treats a newline as a space, so a transcription that kept
+    the image's lines as bare newlines rendered as one long line. Lines that start with a
+    relation are aligned on it; other breaks are gathered. LaTeX that already uses \\\\ or an
+    environment is left alone."""
+    lines = [ln.strip() for ln in latex.split("\n") if ln.strip()]
+    if len(lines) < 2 or "\\\\" in latex or "\\begin{" in latex:
+        return latex
+    if all(ln.startswith(_RELATIONS) for ln in lines[1:]):
+        body = [_align_first(lines[0])] + ["&" + ln for ln in lines[1:]]
+        return "\\begin{aligned}" + " \\\\ ".join(body) + "\\end{aligned}"
+    return "\\begin{gathered}" + " \\\\ ".join(lines) + "\\end{gathered}"
 
 
 _NO_TOOLS = "Respond with text only. Do not use any tools or web search."
@@ -332,7 +372,7 @@ async def equation_latex(png: bytes) -> str:
     latex = re.sub(r"^```(?:latex)?\s*|\s*```$", "", latex).strip()
     if latex.startswith("\\[") and latex.endswith("\\]"):
         latex = latex[2:-2].strip()
-    return latex.strip("$").strip()
+    return multiline_latex(latex.strip("$").strip())
 
 
 _MAX_TURNS = 20

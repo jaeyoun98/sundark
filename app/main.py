@@ -345,6 +345,9 @@ async def math(doc_id: str, page: int):
     key = f"math_v{_LAYOUT_VERSION}_{ai.cache_tag('equation')}_{page}"
     cached = store.cache_get(doc_id, key)
     if cached:
+        # Older cached transcriptions kept line breaks as bare newlines; make them real.
+        for eq in cached.get("equations", []):
+            eq["latex"] = ai.multiline_latex(eq.get("latex", ""))
         return cached
     lay = await _layout_async(doc_id, page)
     pdf_bytes = store.pdf_path(doc_id).read_bytes()

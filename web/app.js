@@ -276,6 +276,7 @@ function ensureLayout(i) {
         para: s.para,
         size: s.size,
         heading: s.heading,
+        equation: !!s.equation,  // paintFrontier upgrades pages that have one
         rects: lineRects(s.words.map((wi) => L.words[wi]), !s.equation),  // in points
         // A sentence that wraps to the next page carries that page's word boxes too, so the
         // highlight can span both pages.
@@ -354,7 +355,7 @@ async function ensureRendered(i) {
 // batch (not a page), and a pool of trPool() workers translates batches concurrently — so even one
 // page keeps the pool busy. A producer walks pages in order, lays each out, builds its (empty)
 // DOM, and enqueues its batches; workers drain the queue. Display stays strictly in order via the
-// sentence-level frontier (see paintFrontier). Equation vision is a second pass after.
+// sentence-level frontier (see paintFrontier), which also upgrades each page's equations.
 const trPool = () => (S.aiConfig && S.aiConfig.backend ? S.aiConfig.concurrency[S.aiConfig.backend] : 1);
 async function translateAll(force) {
   if (!S.aiConfig || !S.aiConfig.backend) return;
@@ -390,11 +391,7 @@ async function translateAll(force) {
     }
   }
   await Promise.all(Array.from({ length: trPool() }, worker));
-
-  for (let i = 0; i < S.numPages; i++) {      // second pass: upgrade display equations
-    if (token !== S.trToken || S.rateLimited === token) return;
-    await fetchMath(i);
-  }
+  // Display equations are upgraded per page as each page is painted (see paintFrontier).
 }
 
 // Merge a sentence's word boxes into one rectangle per visual line (in PDF points).
@@ -544,6 +541,12 @@ function paintFrontier() {
     const wrap = $("trlist").children[S.frontier];
     if (wrap) renderMath(wrap);
     P.translated = true;
+    // Upgrade this page's display equations now instead of after the whole document; the
+    // translation shows the model's own LaTeX until the image-read version arrives.
+    if (P.mathToken !== S.trToken && P.segs && P.segs.some((seg) => seg.equation)) {
+      P.mathToken = S.trToken;
+      fetchMath(S.frontier);
+    }
     S.frontier += 1;
   }
   // Every page is displayed (or the whole document has no translatable sentences, e.g. a scanned
