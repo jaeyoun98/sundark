@@ -589,8 +589,10 @@ function makeTrSeg(i, k, tr) {
   const d = document.createElement("span");
   d.className = "trseg"; d.dataset.page = i; d.dataset.i = k;
   d.textContent = tr;
-  d.addEventListener("mouseenter", () => highlightSource(i, k, true, "near"));
-  d.addEventListener("mouseleave", () => highlightSource(i, k, false));
+  // Hover only highlights (both sides); the PDF is scrolled on CLICK, not on hover, so the
+  // eyes are not yanked around while skimming the translation.
+  d.addEventListener("mouseenter", () => setHover(i, k, true));
+  d.addEventListener("mouseleave", () => setHover(i, k, false));
   d.addEventListener("click", () => {
     document.querySelectorAll(".trseg.pinned").forEach((x) => x.classList.remove("pinned"));
     d.classList.add("pinned");
@@ -628,7 +630,7 @@ function setHover(page, k, on) {
   if (t) t.classList.toggle("hl", on);
 }
 
-// From the translation side (hover/click): highlight both + scroll the PDF to the source.
+// From the translation side (click): highlight both + scroll the PDF to the source.
 function highlightSource(page, k, on, scroll) {
   setHover(page, k, on);
   if (on && scroll) scrollPdfToSeg(page, k, scroll === "center");
@@ -660,13 +662,31 @@ function attachPdfHover(page, textEl) {
       pdfHoverCur = { page, k };
       setHover(page, k, true);
       const t = $("trlist").querySelector(`.trseg[data-page="${page}"][data-i="${k}"]`);
-      if (t && $("tab-translation").classList.contains("active")) t.scrollIntoView({ block: "nearest" });
+      if (t && $("tab-translation").classList.contains("active")) scrollTrToSeg(page, k, t);
     }
   });
   textEl.addEventListener("mouseleave", clearPdfHover);
 }
 function clearPdfHover() {
   if (pdfHoverCur) { setHover(pdfHoverCur.page, pdfHoverCur.k, false); pdfHoverCur = null; }
+}
+
+// Scroll the translation panel so the sentence's translation starts at the same height as
+// its PDF highlight, so the eyes move straight across. Instant, not smooth: sweeping the
+// mouse over the PDF changes the target several times a second, and a smooth scroll would
+// keep restarting and trail behind the pointer.
+function scrollTrToSeg(page, k, t) {
+  const P = S.pages[page];
+  const seg = P.segs[k];
+  if (!seg.rects.length) return;
+  const list = $("trlist");  // the panel's scroller (flex child of #tab-translation)
+  const lb = list.getBoundingClientRect(), tb = t.getBoundingClientRect();
+  let y = P.el.getBoundingClientRect().top + seg.rects[0].top * S.scale;
+  // Near the panel's edges, keep the whole translation visible instead.
+  y = Math.max(lb.top, Math.min(y, lb.bottom - tb.height));
+  // #trlist is zoomed by trScale, so its scrollTop is in unzoomed px.
+  const max = list.scrollHeight - list.clientHeight;
+  list.scrollTo({ top: Math.max(0, Math.min(max, list.scrollTop + (tb.top - y) / trScale)), behavior: "instant" });
 }
 
 // Auto-translate toggle / lang / model changes -> re-run the whole-document translation
