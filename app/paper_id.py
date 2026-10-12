@@ -12,6 +12,7 @@ import pymupdf
 
 _DOI = re.compile(r"\b(10\.\d{4,9}/[^\s\"<>]+)", re.I)
 _ARXIV = re.compile(r"arxiv(?:\.org/abs/|:)\s*(\d{4}\.\d{4,5})(?:v\d+)?", re.I)
+_MAX_DOIS_PER_PAGE = 3
 _ARXIV_DOI = re.compile(r"10\.48550/arxiv\.(\d{4}\.\d{4,5})", re.I)
 
 
@@ -28,9 +29,11 @@ def identifiers(pdf_bytes: bytes) -> dict:
         doc.close()
     doi = None
     for text in (meta, *pages):
-        m = _DOI.search(text)
-        if m:
-            doi = _clean_doi(m.group(1))
+        found = [_clean_doi(m.group(1)) for m in _DOI.finditer(text)]
+        # A page listing many DOIs is a table of contents or reference list; its first DOI
+        # usually belongs to another paper, so skip it.
+        if found and len(set(found)) < _MAX_DOIS_PER_PAGE:
+            doi = found[0]
             break
     arxiv = None
     for text in (meta, *pages):

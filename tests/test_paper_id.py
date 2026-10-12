@@ -26,6 +26,15 @@ class IdentifierTests(unittest.TestCase):
         pdf = make_pdf(["Intro", "Method", "References\n10.1000/late.ref"])
         self.assertEqual(identifiers(pdf), {"doi": None, "arxiv": None})
 
+    def test_a_page_listing_many_dois_is_skipped(self):
+        toc = "Faraday Discussions volume 144\n" + "\n".join(
+            f"Paper {i}, Faraday Discuss., 2010 DOI: 10.1039/b90000{i}a"
+            for i in range(5)
+        )
+        pdf = make_pdf([toc, "Our paper\nDOI: 10.1039/b902283j\nAbstract"])
+        self.assertEqual(identifiers(pdf)["doi"], "10.1039/b902283j")
+        self.assertIsNone(identifiers(make_pdf([toc]))["doi"])
+
 
 class PaperIdTests(unittest.TestCase):
     def test_priority_doi_arxiv_zotero_file(self):
