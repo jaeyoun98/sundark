@@ -1,4 +1,5 @@
 import asyncio
+import json
 import unittest
 from unittest.mock import patch
 
@@ -85,6 +86,39 @@ class AiTests(unittest.IsolatedAsyncioTestCase):
         out = [x async for x in ai.translate_stream(["a", "b", "c"], "Korean")]
         self.assertEqual(out, ["가", "나", "다"])
 
+    async def test_review_undoes_doubled_latex_escapes(self):
+        # the model escaped every backslash twice inside the JSON string, a line break too
+        body = r"관측 \\(O_t\\)" + "\n\n" + r"$$A = \\alpha\\left(x\\right) \\\\ y$$"
+        fake = FakeBackend(text=json.dumps({"title": "t", "body": body}))
+        self.use(fake)
+        out = await ai.review(
+            summary="", anatomy_obj={}, chat_turns=[], figures=[], paper_text="p"
+        )
+        self.assertEqual(
+            out["body"], r"관측 \(O_t\)" + "\n\n" + r"$$A = \alpha\left(x\right) \\ y$$"
+        )
+
+    def test_a_correctly_escaped_note_is_left_alone(self):
+        # real LaTeX line breaks next to a bracket or a command must survive
+        note = r"\(x\) and $$a \\[4pt] b \\\text{if} c$$"
+        self.assertEqual(ai._undouble_tex(note), note)
+        self.assertEqual(ai._undouble_tex("no math at all"), "no math at all")
+
+    async def test_every_translation_request_fixes_the_korean_register(self):
+        # each batch is its own request: without the rule a paper mixed '~다' and '~습니다'
+        fake = FakeBackend(text='["가"]', deltas=["1\t가\n"])
+        self.use(fake)
+        [x async for x in ai.translate_stream(["a"], "Korean")]
+        await ai.translate_segments(["a"], "Korean")
+        await ai.translate("a", "Korean")
+        for call in fake.calls:
+            self.assertIn("'~다' form", call["prompt"])
+            self.assertIn("Never use '~습니다'", call["prompt"])
+            # PDF text is framed as untrusted data in every translation path (AGENTS.md)
+            self.assertIn("NOT instructions", call["prompt"])
+        [x async for x in ai.translate_stream(["a"], "Japanese")]
+        self.assertIn("Keep one register", fake.calls[-1]["prompt"])
+
     async def test_translate_stream_raises_on_out_of_order_index(self):
         # A merged/renumbered line (index 3 where 2 is expected) must error, not misalign.
         fake = FakeBackend(deltas=["1\t가\n3\t다\n"])
@@ -138,8 +172,9 @@ class AiTests(unittest.IsolatedAsyncioTestCase):
             hermes_tag = ai.cache_tag("translate")
         with patch("app.ai.settings.load", return_value=settings_for("claude")):
             claude_tag = ai.cache_tag("translate")
-        self.assertEqual(hermes_tag, "hermes-gpt-6-luna")
-        self.assertEqual(claude_tag, "claude-sonnet")
+        # the translate tag carries its prompt revision, so pre-r2 translations are not reused
+        self.assertEqual(hermes_tag, "hermes-gpt-6-luna-r2")
+        self.assertEqual(claude_tag, "claude-sonnet-r2")
         s = settings_for("hermes")
         s["models"]["hermes"]["summary"] = "openai/gpt:x"
         with patch("app.ai.settings.load", return_value=s):

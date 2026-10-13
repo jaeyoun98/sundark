@@ -141,6 +141,19 @@ Requires Claude Code (`claude`, signed in), Hermes (`hermes setup`), or ChatGPT 
   and prepended (as reference, not content) to each page so terminology stays
   consistent across pages. Translation itself stays on the user's chosen model.
   Keep the brief model cheap and the source short — it must not slow translation.
+  A rendering is the term as the paper's field writes it in the target language, often
+  the English term itself; a coined literal translation leaked into both the translation
+  and the review note.
+- **Translation keeps one register.** Each batch is its own request, so without a rule a
+  paper came out half '~다', half '~습니다'. `ai._register()` fixes it per target language
+  (Korean: academic '~다'; headings and caption labels stay noun phrases). A prompt change
+  that alters what a cached result should look like bumps that task in `ai._PROMPT_REV`,
+  which goes into `cache_tag()`, so results written under the old prompt are not reused.
+- **The review note is a memo.** One register ('~함/~임', noun phrases), field terms as
+  the field writes them (no example words in the prompt: papers come from any field), one
+  value per table cell, every symbol in `\(...\)`, display math outside lists, and no
+  "(채팅에서)"-style source tags. `ai._undouble_tex()` repairs LaTeX the model escaped twice
+  inside its JSON ("\\(O_t\\)").
 - **Display equations are re-read from the image.** The PDF text layer scrambles 2D
   math, so `/api/math` crops each equation region (`pdf_utils.crop_region_png`) and
   a vision call (`ai.equation_latex`) transcribes it to clean LaTeX; the translation
