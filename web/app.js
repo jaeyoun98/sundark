@@ -949,6 +949,27 @@ function mdMath(text) {
   return marked.parse(shielded).replace(/@@MATH(\d+)@@/g, (_, k) => escape(spans[Number(k)]));
 }
 
+// copy-tex writes LaTeX to text/plain but keeps rendered math in text/html.
+// Register after deferred copy-tex has loaded; only postprocess its HTML payload.
+document.addEventListener("DOMContentLoaded", () => {
+  document.addEventListener("copy", (e) => {
+    const data = e.clipboardData;
+    if (!data || !e.defaultPrevented) return;
+    const box = document.createElement("div");
+    box.innerHTML = data.getData("text/html");
+    const formulas = box.querySelectorAll(".katex");
+    if (!formulas.length) return;
+    formulas.forEach((k) => {
+      const source = k.querySelector('annotation[encoding="application/x-tex"]');
+      if (!source) return;
+      const display = k.closest(".katex-display");
+      const delimiter = display ? "$$" : "$";
+      (display || k).replaceWith(document.createTextNode(delimiter + source.textContent + delimiter));
+    });
+    data.setData("text/html", box.innerHTML);
+  });
+});
+
 function renderMath(el) {
   if (!window.renderMathInElement) return;
   try {
