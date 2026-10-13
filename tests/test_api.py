@@ -190,3 +190,82 @@ class ApiTests(unittest.TestCase):
         ):
             self.client.get("/api/config")
         self.assertEqual(seen, ["off-loop"])
+
+    def test_untranslated_sentence_is_translated_again(self):
+        src = (
+            "where the probability that the system is in state i at n MCS is given by the "
+            "i th component of the vector, and A is the transition matrix."
+        )
+        half = (
+            "where the probability that the system is in state \\(i\\) at \\(n\\) MCS is given "
+            "by the \\(i\\)번째 성분 of the vector, and \\(A\\) is the 전이 행렬."
+        )
+        good = "여기서 \\(n\\) MCS에서 계가 상태 \\(i\\)에 있을 확률은 벡터의 \\(i\\)번째 성분이고, \\(A\\)는 전이 행렬이다."
+
+        async def stream(segs, lang, brief=""):
+            yield "첫 문장."
+            yield half
+
+        retranslate = AsyncMock(return_value=good)
+        with (
+            patch("app.main.ai.translate_stream", new=stream),
+            patch("app.main.ai.translate", new=retranslate),
+            patch("app.main._get_brief", new=AsyncMock(return_value="")),
+        ):
+            r = self.client.post(
+                "/api/translate_stream",
+                json={"doc_id": "d", "page": 0, "segments": ["First sentence.", src]},
+            )
+        lines = [json.loads(x) for x in r.text.splitlines()]
+        self.assertEqual(lines, [{"i": 0, "tr": "첫 문장."}, {"i": 1, "tr": good}])
+        retranslate.assert_awaited_once_with(src, "Korean")
+
+    def test_invalid_equation_transcription_is_dropped(self):
+        from app import ai
+
+        with patch(
+            "app.ai._run",
+            new=AsyncMock(
+                return_value="\\mathbf{x}_n = A\\mathbf{x}_{n-1},\\end{final"
+            ),
+        ):
+            import asyncio
+
+            self.assertEqual(asyncio.run(ai.equation_latex(b"PNG")), "")
+
+    def test_cached_untranslated_sentence_is_fixed_once(self):
+        src = (
+            "where the probability that the system is in state i at n MCS is given by the "
+            "i th component of the vector, and A is the transition matrix."
+        )
+        good = "여기서 계가 상태 \\(i\\)에 있을 확률은 벡터의 \\(i\\)번째 성분이고, \\(A\\)는 전이 행렬이다."
+        body = {"doc_id": "d", "page": 0, "segments": ["First sentence.", src]}
+        with patch("app.main._get_brief", new=AsyncMock(return_value="")):
+
+            async def stream(segs, lang, brief=""):
+                yield "첫 문장."
+                yield src  # left in English, and the retry fails too
+
+            with (
+                patch("app.main.ai.translate_stream", new=stream),
+                patch("app.main.ai.translate", new=AsyncMock(return_value=src)),
+            ):
+                self.client.post("/api/translate_stream", json=body)
+            with patch(
+                "app.main.ai.translate", new=AsyncMock(return_value=good)
+            ) as again:
+                first = [
+                    json.loads(x)
+                    for x in self.client.post(
+                        "/api/translate_stream", json=body
+                    ).text.splitlines()
+                ]
+                second = [
+                    json.loads(x)
+                    for x in self.client.post(
+                        "/api/translate_stream", json=body
+                    ).text.splitlines()
+                ]
+        self.assertEqual(first, [{"i": 0, "tr": "첫 문장."}, {"i": 1, "tr": good}])
+        self.assertEqual(second, first)
+        again.assert_awaited_once()  # the fix was written back to the cache

@@ -38,3 +38,6 @@ class FrontendTests(unittest.TestCase):
 
     def test_math_is_upgraded_per_page(self):
         self.node("tests/frontend_math_per_page.test.js")
+
+    def test_unrenderable_math_is_not_swapped_in(self):
+        self.node("tests/frontend_math_guard.test.js")

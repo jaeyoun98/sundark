@@ -668,7 +668,13 @@ async function fetchMath(i, wrap) {
     if (!d.equations || !d.equations.length) return;
     for (const eq of d.equations) {
       const sp = wrap.querySelector(`.trseg[data-i="${eq.i}"]`);
-      if (sp && eq.latex) sp.textContent = "\\[ " + eq.latex + " \\]";
+      if (!sp || !eq.latex) continue;
+      // Keep the translation's own math if KaTeX cannot render the image-read LaTeX.
+      if (window.katex) {
+        try { window.katex.renderToString(eq.latex, { displayMode: true, throwOnError: true }); }
+        catch { continue; }
+      }
+      sp.textContent = "\\[ " + eq.latex + " \\]";
     }
     renderMath(wrap);
   } catch { /* best-effort: keep the original text if math fetch fails */ }
