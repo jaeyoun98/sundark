@@ -153,7 +153,18 @@ Requires Claude Code (`claude`, signed in), Hermes (`hermes setup`), or ChatGPT 
   the field writes them (no example words in the prompt: papers come from any field), one
   value per table cell, every symbol in `\(...\)`, display math outside lists, and no
   "(채팅에서)"-style source tags. `ai._undouble_tex()` repairs LaTeX the model escaped twice
-  inside its JSON ("\\(O_t\\)").
+  inside its JSON ("\\(O_t\\)"). Its job is recall: from the note alone, months later, the
+  reader recalls why the paper exists and how it solves the problem. So it keeps only that,
+  the headline evidence and the limits that really matter, and leaves out what the field
+  already knows, hyperparameters, side experiments and related-work lists (a note of 8.6k
+  characters became about 5k). Six sections and no others (세 줄 요약, 배경과 문제, 핵심 기여,
+  방법, 실험 결과, 한계와 의문); what came up in the chat is woven into the explanation it
+  helps (often the method) instead of a section of its own. It makes good use of the paper's
+  figures (the problem or idea at a glance, the overview, a key component, the main effect)
+  and shows a table only when it is the clearest evidence. Counts are not capped (a paper
+  has as many contributions as it has, and a cap made the model pack several points into
+  one line), except 한계와 의문 at three; length is set by "a few minutes to read, a line
+  only if the reader would miss it".
 - **Display equations are re-read from the image.** The PDF text layer scrambles 2D
   math, so `/api/math` crops each equation region (`pdf_utils.crop_region_png`) and
   a vision call (`ai.equation_latex`) transcribes it to clean LaTeX; the translation
