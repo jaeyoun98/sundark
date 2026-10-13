@@ -14,10 +14,8 @@ dependencies = [
     # pysbd mis-splits. The en_core_web_sm model (~12 MB) downloads on first use; pysbd is the
     # fallback if spaCy or the model is unavailable.
     "spacy>=3.7",
-    # Layout detection (DocLayout-YOLO) is the default region detector. torch/torchvision
-    # resolve to the right wheel per platform (CPU/MPS on macOS/Windows, CUDA when a GPU is
-    # present) and must come from the same index. If the model can't load, pdf_utils falls
-    # back to the heuristic parser, so the app still runs.
+    # Layout detection is required at startup. Keep torch and torchvision on the
+    # same index; device selection happens at runtime, not during dependency resolution.
     "doclayout-yolo>=0.0.3",
     "torch>=2.0",
     "torchvision>=0.15",
@@ -25,8 +23,14 @@ dependencies = [
     "pillow>=10.0",
 ]
 
+[dependency-groups]
+dev = [
+    "httpx>=0.28", # FastAPI TestClient: declare it directly, not via a runtime dependency.
+    "ruff>=0.14",
+]
+
+# Ruff infers its Python target from project.requires-python.
 [tool.ruff]
-target-version = "py312"
 line-length = 88
 
 [tool.ruff.lint]

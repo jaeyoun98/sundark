@@ -1,41 +1,87 @@
-# Ruff Format Check
-# 코드 포맷팅 자동 확인 워크플로우
-
+# Keep the existing workflow and check names for repository status-check consumers.
 name: Format Check
 
 on:
   pull_request:
-    branches:
-      - main
-      - develop
+    branches: [main, develop]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 jobs:
   format:
     name: Check code formatting
-    runs-on: ubuntu-latest
+    # Public repo: largest standard free tier (4 vCPU, 16 GB RAM, 14 GB SSD).
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v3
-
-      - name: Set up Python
-        uses: actions/setup-python@v4
+        uses: actions/checkout@v7
         with:
-          python-version: '3.12'
+          persist-credentials: false
 
-      - name: Install Ruff
-        run: pip install ruff
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+          prune-cache: true
+          cache-dependency-glob: |
+            .python-version
+            pyproject.toml
+            uv.lock
+            .github/workflows/format-check.yml
 
-      - name: Check formatting
-        run: ruff format --check . && ruff check .
+      - name: Install project Python
+        run: uv python install
 
-      - name: Install project dependencies
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v5
+        with:
+          version: '11'
+
+      # The unittest suite invokes Node; explicitly install it so JS checks cannot skip.
+      - name: Set up Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+
+      - name: Install JavaScript tooling
+        run: pnpm install --frozen-lockfile
+
+      # Advisory during adoption: avoid reformatting app.js while PR #4 changes it.
+      - name: Check JavaScript formatting (advisory)
+        id: js-format
+        continue-on-error: true
+        run: pnpm run format:check
+
+      - name: Report JavaScript formatting debt
+        if: steps.js-format.outcome == 'failure'
         run: |
-          pip install uv
-          uv sync --frozen
+          echo '::warning::Oxfmt found existing formatting debt; this check is advisory until the source-format migration.'
+          echo '### Oxfmt: advisory check failed' >> "$GITHUB_STEP_SUMMARY"
+          echo 'Review the formatting step log. Source reformatting is deferred to avoid conflicts with PR #4; Python, tests, and JS syntax checks remain required.' >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Unit tests
-        run: uv run python -m unittest discover -s tests -v
+      # --locked also rejects stale metadata; --frozen alone would not check it.
+      - name: Install locked project dependencies
+        run: uv sync --locked
 
-      - name: Check browser JavaScript
+      - name: Check formatting and imports
+        run: |
+          uv run --no-sync ruff format --check .
+          uv run --no-sync ruff check .
+
+      - name: Python and JavaScript regression tests
+        run: uv run --no-sync python -m unittest discover -s tests -v
+
+      - name: Check browser JavaScript syntax
         run: node --check web/app.js
