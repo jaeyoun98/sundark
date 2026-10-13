@@ -34,6 +34,17 @@ PAPERS_DIR.mkdir(parents=True, exist_ok=True)
 app = FastAPI(title="Paper Reader")
 
 
+@app.middleware("http")
+async def _revalidate_ui(request: Request, call_next):
+    """Make browsers revalidate the UI files (cheap 304 via ETag) on every load. Without a
+    Cache-Control header they cache app.js heuristically, so a normal reload after an update
+    kept running the old code."""
+    response = await call_next(request)
+    if not request.url.path.startswith("/api/"):
+        response.headers.setdefault("Cache-Control", "no-cache")
+    return response
+
+
 @app.exception_handler(AIError)
 async def _ai_error(_request: Request, exc: AIError):
     limited = isinstance(exc, RateLimitError)
