@@ -297,8 +297,13 @@ async function ensureRendered(i) {
   const page = await S.pdf.getPage(i + 1);
   const vp = page.getViewport({ scale: S.scale });
 
+  // Draw at the screen's pixel density: on a Retina display (2 device pixels per CSS pixel) a
+  // CSS-sized canvas is upscaled and the page looks soft. The CSS size is the backing size over
+  // dpr, not vp's fractional size, so each canvas pixel lands on exactly one device pixel.
+  const dpr = window.devicePixelRatio || 1;
   const canvas = document.createElement("canvas");
-  canvas.width = vp.width; canvas.height = vp.height;
+  canvas.width = Math.floor(vp.width * dpr); canvas.height = Math.floor(vp.height * dpr);
+  canvas.style.width = canvas.width / dpr + "px"; canvas.style.height = canvas.height / dpr + "px";
   const textEl = document.createElement("div");
   textEl.className = "textlayer";
   const ph = P.el.querySelector(".ph");
@@ -306,7 +311,10 @@ async function ensureRendered(i) {
   P.el.insertBefore(canvas, P.hllayer);  // order: canvas, hllayer, textlayer
   P.el.appendChild(textEl);
 
-  await page.render({ canvasContext: canvas.getContext("2d"), viewport: vp }).promise;
+  await page.render({
+    canvasContext: canvas.getContext("2d"), viewport: vp,
+    transform: dpr !== 1 ? [dpr, 0, 0, dpr, 0, 0] : null,
+  }).promise;
 
   await ensureLayout(i);
   const L = P.layout;
