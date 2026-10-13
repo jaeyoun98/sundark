@@ -494,6 +494,7 @@ function ensureLayout(i) {
       P.layout = L;
       P.segs = L.sentences.map((s) => ({
         text: s.text,
+        tex: s.tex,  // the text with ^{...}/_{...} script marks, sent for translation only
         para: s.para,
         size: s.size,
         heading: s.heading,
@@ -809,7 +810,7 @@ function paragraphBatches(segs) {
       batches.push(cur); cur = null;
     }
     if (!cur) cur = { start: k, texts: [] };
-    cur.texts.push(seg.text);
+    cur.texts.push(seg.tex || seg.text);
     prevPara = seg.para;
   });
   if (cur) batches.push(cur);

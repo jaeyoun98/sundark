@@ -181,8 +181,21 @@ class InlineMergeTests(unittest.TestCase):
         cuts = [i for i, c in enumerate(t) if c == "−"]
         self.assertEqual(len(merge_at(t, cuts)), 3)
 
+    def test_a_fragment_ending_on_an_operator_rejoins(self):
+        # NeRF and Adam with CMEX10 decoded: the segmenter broke right after "∑" and after "<".
+        t = "weights as w i = w i / ∑ Nc j =1 w j produces a constant PDF."
+        self.assertEqual(len(merge_at(t, [t.index("Nc")])), 1)
+        t = "we have that | m t / √ v t | < 1 therefore | Δ t | < α ."
+        self.assertEqual(len(merge_at(t, [t.index("1 therefore")])), 1)
+        t = "where C = 10 n ( t 0 − t ′ ) √ Q."
+        self.assertEqual(len(merge_at(t, [t.index("√ Q")])), 1)
+
+    def test_an_operator_inside_a_word_is_not_an_open_end(self):
+        t = "We implemented it in C++ Our code is public."
+        self.assertEqual(len(merge_at(t, [t.index("Our")])), 2)
+
     def test_math_operator_helper(self):
-        for tail in ("= 64", "− 1 .", "· d", "+ b", "± 0.1", "< 0.5"):
+        for tail in ("= 64", "− 1 .", "· d", "+ b", "± 0.1", "< 0.5", "∑ i x i", "√ d"):
             self.assertTrue(_starts_math_cont(tail, starts(tail)), tail)
         # ASCII hyphen is deliberately not math (dash list items); neither is a capitalized
         # list item after a math-like label, nor plain text.

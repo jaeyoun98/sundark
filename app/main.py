@@ -265,8 +265,19 @@ _layout_lock = asyncio.Lock()
 # "(1)") into their own sentences; rejoin fragments the segmenter broke mid-sentence (inline
 # math, a citation, a bracket or parenthesis, closing punctuation, inside a word); keep short
 # prose by paragraph context; stitch page breaks before a citation or inside a hyphenated word,
-# skipping caption sentences.)
-_LAYOUT_VERSION = 9
+# skipping caption sentences. v10: word boxes from the glyphs' own positions instead of a split
+# of the span by character count; CMEX10 symbols decoded; a side-margin word dropped only with
+# its whole line; a fragment ending on a math operator, or opening with a stacked subscript,
+# rejoins its sentence; a sentence with inline scripts carries a ^{...}/_{...} marked `tex`;
+# end matter compared in column-aware reading order; a drop box over part of a line decides
+# the whole line by its first word; the lines of one title box are one heading; a later
+# paragraph that only repeats page 0's front matter (an appendix cover) is dropped; footnotes
+# are kept, and they and figure/table captions (also one a table box swallowed) come after the
+# page's text; running heads match by
+# letters; page 0 cuts at a real Abstract heading and keeps a caption above it; only the
+# reference list is skipped, from a whole-line References heading to an appendix heading or
+# the first page that is not a reference list.)
+_LAYOUT_VERSION = 10
 
 
 def _page_layout_cached(doc_id: str, page: int) -> dict:
@@ -280,14 +291,17 @@ def _page_layout_cached(doc_id: str, page: int) -> dict:
     if cached:
         return cached
     pdf_bytes = pdf_path.read_bytes()
-    hc = store.cache_get(doc_id, "headers")
+    # v2: running heads are matched by their letters only (older entries kept digits and marks)
+    hc = store.cache_get(doc_id, "headers_v2")
     if hc is None:
         hc = {"set": sorted(pdf_utils.running_headers(pdf_bytes))}
-        store.cache_put(doc_id, "headers", hc)
-    sc = store.cache_get(doc_id, "skip")
+        store.cache_put(doc_id, "headers_v2", hc)
+    # v2: the range is the reference list alone, and its positions carry x for column-aware
+    # reading order (older entries started at Acknowledgements and lack x)
+    sc = store.cache_get(doc_id, "skip_v2")
     if sc is None:
         sc = {"range": pdf_utils.end_matter_range(pdf_bytes, headers=set(hc["set"]))}
-        store.cache_put(doc_id, "skip", sc)
+        store.cache_put(doc_id, "skip_v2", sc)
     result = pdf_utils.layout(pdf_bytes, page, headers=set(hc["set"]), skip=sc["range"])
     store.cache_put(doc_id, f"layout_v{_LAYOUT_VERSION}_{page}", result)
     return result

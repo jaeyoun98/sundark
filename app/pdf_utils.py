@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import functools
 import re
 import statistics
 
@@ -214,26 +215,146 @@ _MATHPI = str.maketrans(
     }
 )
 
+# TeX's CMEX10 (big operators, radicals, wide accents, big delimiters) has glyph names outside
+# the Adobe list, so the text layer falls back to the raw codes: "P" for a sum, "e" for a wide
+# tilde, "(" for a big "{", a C0 control code for a big parenthesis (which _CTRL_STRIP would
+# then drop). The codes are TeX's fixed OMX layout, checked against the encodings embedded in
+# 28 CMEX fonts of real PDFs; only codes seen there are mapped. A tall delimiter is drawn in
+# pieces: its top piece reads as the delimiter, its extension and bottom pieces read as
+# nothing. Not mapped: code 32 (a big "("), because the text layer's own word spaces are " "
+# too; and the vertical bar extensions (codes 12, 13), which stack into "‖‖ A ‖‖" and split the
+# sentence there. A code the font's ToUnicode map covers is never remapped (_cmex_tables).
+_CMEX_FONT = "CMEX"
+_CMEX = str.maketrans(
+    {
+        "\x00": "(",
+        "\x01": ")",
+        "\x02": "[",
+        "\x03": "]",
+        "\x08": "{",
+        "\x09": "}",
+        "\x0a": "⟨",
+        "\x0b": "⟩",
+        "\x10": "(",
+        "\x11": ")",
+        "\x12": "(",
+        "\x13": ")",
+        "\x14": "[",
+        "\x15": "]",
+        "\x16": "⌊",
+        "\x17": "⌋",
+        "\x1a": "{",
+        "\x1b": "}",
+        "(": "{",
+        ")": "}",
+        "!": ")",
+        '"': "[",
+        "#": "]",
+        "h": "[",
+        "i": "]",
+        "n": "{",
+        "o": "}",
+        # top pieces of a tall delimiter, then its bottom and extension pieces
+        "0": "(",
+        "1": ")",
+        "2": "[",
+        "3": "]",
+        "@": "",
+        "A": "",
+        "B": "",
+        "C": "",
+        "4": "",
+        "5": "",
+        "6": "",
+        "7": "",
+        "F": "⊔",
+        "P": "∑",
+        "Q": "∏",
+        "R": "∫",
+        "S": "⋃",
+        "X": "∑",
+        "Y": "∏",
+        "Z": "∫",
+        "b": "ˆ",
+        "e": "˜",
+        "f": "˜",
+        "p": "√",
+        "q": "√",
+        "r": "√",
+        "s": "√",
+        # pieces of a horizontal (over/under) brace
+        "z": "",
+        "{": "",
+        "|": "",
+        "}": "",
+    }
+)
+
 # Bump when extract() changes what it returns, so stored docs are re-extracted on next open.
-TEXT_VERSION = 2
+# (v3: CMEX10 symbols decoded.)
+TEXT_VERSION = 3
 
 
-def _decode_span(span: dict) -> str:
-    """A span's text with the MathPi font's borrowed ASCII codes mapped to what it draws."""
-    text = span.get("text", "")
-    return text.translate(_MATHPI) if _MATHPI_FONT in span.get("font", "") else text
+def _cmap_codes(cmap: str) -> frozenset[int]:
+    """The character codes a ToUnicode CMap maps (its bfchar and bfrange entries)."""
+    codes: set[int] = set()
+    for block in re.findall(r"beginbfchar(.*?)endbfchar", cmap, re.S):
+        pairs = re.findall(r"<([0-9A-Fa-f]+)>\s*<[0-9A-Fa-f]+>", block)
+        codes.update(int(c, 16) for c in pairs)
+    for block in re.findall(r"beginbfrange(.*?)endbfrange", cmap, re.S):
+        block = re.sub(r"\[[^\]]*\]", "<0>", block)  # a range's array of targets
+        for a, b in re.findall(r"<([0-9A-Fa-f]+)>\s*<([0-9A-Fa-f]+)>\s*<", block):
+            codes.update(range(int(a, 16), int(b, 16) + 1))
+    return frozenset(codes)
+
+
+def _cmex_tables(page) -> dict[str, dict[int, str]]:
+    """For each CMEX font on the page, _CMEX less the codes its ToUnicode map covers.
+
+    pdfTeX's built-in map for cmex covers only the tall-delimiter pieces, so every other glyph
+    still reads as its raw code; a full map (newer TeX setups) reads every glyph as what it
+    draws ("(" is then a real parenthesis), so only the codes a font leaves unmapped are raw."""
+    out: dict[str, dict[int, str]] = {}
+    for font in page.get_fonts():
+        xref, base = font[0], font[3]
+        if _CMEX_FONT not in base.upper():
+            continue
+        doc = page.parent
+        kind, ref = doc.xref_get_key(xref, "ToUnicode")
+        cmap = doc.xref_stream(int(ref.split()[0])) if kind == "xref" else None
+        covered = _cmap_codes((cmap or b"").decode("latin-1"))
+        # a span names its font without the subset tag ("ABCDEF+CMEX10" -> "CMEX10")
+        out[base.split("+")[-1]] = {o: v for o, v in _CMEX.items() if o not in covered}
+    return out
+
+
+def _decode_span(span: dict, cmex: dict[str, dict[int, str]] | None = None) -> str:
+    """A span's text with a math font's borrowed codes (MathPi, CMEX10) mapped to what it
+    draws. `cmex` is _cmex_tables() of the span's page; without it all of _CMEX applies."""
+    text, font = span.get("text", ""), span.get("font", "")
+    if _MATHPI_FONT in font:
+        return text.translate(_MATHPI)
+    if _CMEX_FONT not in font.upper():
+        return text
+    return text.translate((cmex or {}).get(font.split("+")[-1], _CMEX))
 
 
 def _page_text(page) -> str:
-    """Plain page text; pages using the MathPi font are rebuilt from decoded spans."""
-    if not any(_MATHPI_FONT in f[3] for f in page.get_fonts()):
+    """Plain page text; pages using a math font with borrowed codes are rebuilt from decoded
+    spans."""
+    if not any(
+        _MATHPI_FONT in f[3] or _CMEX_FONT in f[3].upper() for f in page.get_fonts()
+    ):
         return page.get_text("text")
+    cmex = _cmex_tables(page)
     lines = []
     for block in page.get_text("dict").get("blocks", []):
         if block.get("type") != 0:
             continue
         for line in block.get("lines", []):
-            lines.append("".join(_decode_span(sp) for sp in line.get("spans", [])))
+            lines.append(
+                "".join(_decode_span(sp, cmex) for sp in line.get("spans", []))
+            )
     return "".join(line + "\n" for line in lines)
 
 
@@ -312,7 +433,11 @@ def _starts_lower_frag(text: str, span: tuple[int, int]) -> bool:
 # the spaced-out PDF glyphs put the operator at the start of the next fragment, and merging it
 # back rejoins the expression. The true minus U+2212 is included; the ASCII hyphen is
 # deliberately NOT, since a leading "-" is more often a dash list item than math.
-_MATH_CONT_START = frozenset("=+/·⋅×⊙∥≈≠≤≥<>±∼→←⇒∈∝≡−")
+_MATH_CONT_START = frozenset("=+/·⋅×⊙∥≈≠≤≥<>±∼→←⇒∈∝≡−∑∏∫√")
+# A fragment never ends on such an operator, a big operator, a radical or an opening bracket
+# standing as its own token ("ˆ w i = w i / ∑" + "Nc j =1 w j produces ...", "| m / √ v | <" +
+# "1 therefore ..."): the segmenter broke inside the expression. "C++" is not standalone.
+_MATH_OPEN_END = re.compile(r"(?:^|\s)[=+/·⋅×≈≠≤≥<>±∼→⇒∈∝≡−∑∏∫√(\[{⟨]$")
 # ...but an operator-like label followed by a capitalized word ("− We propose ...",
 # "· We evaluate ...") is a list item, not math.
 _LIST_LABEL = re.compile(r"[−·⋅+→]\s+[A-Z][a-z]")
@@ -454,10 +579,11 @@ def _merge_fragments(
                 # ("LIBERO-" + "Long", "GPT-" + "5.6 Sol", "base-" + "Λ CDM")
                 or re.search(r"[^\W_]-$", t)
                 # a sentence never ends on ',' or ';' ("( Holz & Hughes 2005 ;" + "Abbott et
-                # al. 2017", "In his seminal paper ," + "Hamilton proved") - but an enumeration
-                # item or bullet after it stays split
+                # al. 2017", "In his seminal paper ," + "Hamilton proved") or on a standalone
+                # math operator (_MATH_OPEN_END) - but an enumeration item or bullet after it
+                # stays split
                 or (
-                    t[-1:] in ",;"
+                    (t[-1:] in ",;" or _MATH_OPEN_END.search(t))
                     and not _ENUM_RE.match(text[raw[i + 1][0] : raw[i + 1][1]].lstrip())
                     and text[raw[i + 1][0] : raw[i + 1][1]].lstrip()[:1]
                     not in _BULLET_CHARS
@@ -643,49 +769,199 @@ def _join_words(widx: list, words: list) -> tuple[str, list]:
     return text, local
 
 
-def _words_with_style(page) -> list[dict]:
-    """Words with geometry AND font size in reading order, via get_text('dict').
+# A glyph that can carry a script: a letter or digit, a closing bracket, a prime or star, a
+# big operator. An opening bracket or a relation cannot; small text after one is a fraction.
+_SCRIPT_BASE_END = ")]}⟩|‖∥′∗*†∑∏∫⋃˜ˆ"
 
-    Word boxes are approximated by splitting each styled span proportionally — exact enough
-    for highlighting, and the per-word font size feeds the paragraph font sizing in the panel."""
+
+def _script_roles(
+    seq: list, words: list, styled: list, line_of: dict, body: float
+) -> dict[int, str]:
+    """The sub/superscripts of one paragraph (word indices in reading order): {g: "^" | "_"}.
+
+    A script word is set smaller than the body (<= 0.85x) with its baseline above (superscript)
+    or below (subscript) the baseline of its line's body-size words. A run of them is marked
+    only when it is ATTACHED: right after a body-size glyph that can carry a script, on the
+    same line with no gap ("a^j"), or right after or under a marked run ("}^{N neg}_{j=1}").
+    A small run after a gap - an inline fraction's numerator and denominator, "≜ β²₁/√β₂" -
+    stays unmarked rather than being read as scripts of the word before it."""
+    small = 0.85 * body
+    ref: dict = {}
+    for g in seq:
+        if styled[g]["size"] > small:
+            ref.setdefault(line_of[g], []).append(styled[g]["base"])
+    ref = {ln: statistics.median(b) for ln, b in ref.items()}
+
+    def role(g):
+        if styled[g]["size"] > small or line_of[g] not in ref:
+            return None
+        off = styled[g]["base"] - ref[line_of[g]]
+        return "^" if off < -0.15 * body else "_" if off > 0.08 * body else None
+
+    out: dict[int, str] = {}
+    i = 0
+    while i < len(seq):
+        r = role(seq[i])
+        if not r:
+            i += 1
+            continue
+        j = i
+        while j + 1 < len(seq) and role(seq[j + 1]) == r:
+            j += 1
+        if i > 0 and line_of[seq[i - 1]] == line_of[seq[i]]:
+            b = seq[i - 1]
+            gap = words[seq[i]]["x0"] - words[b]["x1"]
+            if b in out:
+                attached = gap <= 0.25 * body
+            else:
+                t = words[b]["t"]
+                attached = (
+                    role(b) is None
+                    and styled[b]["size"] > small
+                    and (t[-1:].isalnum() or t[-1:] in _SCRIPT_BASE_END)
+                    and -0.5 <= gap <= 0.25 * body
+                )
+            if attached:
+                out.update({g: r for g in seq[i : j + 1]})
+        i = j + 1
+    return out
+
+
+def _mark_scripts(text: str, s: int, e: int, local: list, marks: dict) -> str:
+    """text[s:e].strip() with each run of marked script words wrapped as ^{...} / _{...}."""
+    inside = [(a, b, g) for a, b, g in local if a >= s and b <= e]
+    ins = []
+    for k, (a, b, g) in enumerate(inside):
+        r = marks.get(g)
+        if not r:
+            continue
+        if not k or marks.get(inside[k - 1][2]) != r:
+            ins.append((a, 1, r + "{"))
+        if k + 1 == len(inside) or marks.get(inside[k + 1][2]) != r:
+            ins.append((b, 0, "}"))
+    out, last = [], s
+    for pos, _, mark in sorted(ins):
+        out += [text[last:pos], mark]
+        last = pos
+    out.append(text[last:e])
+    return "".join(out).strip()
+
+
+def _words_with_style(page) -> list[dict]:
+    """Words with geometry AND font size in reading order, via get_text('rawdict').
+
+    A word's box spans its own glyphs. Splitting a span by character count is not exact: a
+    justified line often comes as ONE span, and the guess drifted up to ~20pt, enough to put a
+    sentence's first capital inside the previous sentence's last word (and its highlight). A
+    span whose decoded text no longer maps 1:1 onto its glyphs falls back to that split. The
+    per-word font size feeds the paragraph font sizing in the panel."""
     out: list[dict] = []
-    d = page.get_text("dict")
+    d = page.get_text("rawdict")
+    cmex = _cmex_tables(page)
     for bno, block in enumerate(d.get("blocks", [])):
         if block.get("type") != 0:  # skip images
             continue
         for lno, line in enumerate(block.get("lines", [])):
             for span in line.get("spans", []):
-                stext = _decode_span(span)
+                chars = span.get("chars", [])
+                stext = _decode_span(
+                    {**span, "text": "".join(c["c"] for c in chars)}, cmex
+                )
                 if not stext.strip():
                     continue
+                exact = len(stext) == len(chars)
                 size = span.get("size", 0.0)
                 sx0, sy0, sx1, sy1 = span.get("bbox", (0, 0, 0, 0))
-                cw = (sx1 - sx0) / len(stext) if stext else 0
-                pos = sx0
-                for tok in re.findall(r"\S+\s*", stext):
-                    wx1 = pos + cw * len(tok)
-                    t = tok.strip().translate(_CTRL_STRIP)
-                    if t:
-                        out.append(
-                            {
-                                "x0": round(pos, 2),
-                                "y0": round(sy0, 2),
-                                "x1": round(min(wx1, sx1), 2),
-                                "y1": round(sy1, 2),
-                                "t": t,
-                                "size": round(size, 1),
-                                "bno": bno,
-                                "lno": lno,
-                            }
-                        )
-                    pos = wx1
+                # the span's baseline: it tells a raised or lowered script apart from text
+                # that is only set smaller (a glyph box's height depends on the font)
+                base = (span.get("origin") or chars[0]["origin"])[1]
+                cw = (sx1 - sx0) / len(stext)
+                for m in re.finditer(r"\S+\s*", stext):
+                    t = m.group(0).strip().translate(_CTRL_STRIP)
+                    if not t:
+                        continue
+                    if exact:
+                        glyphs = chars[m.start() : m.start() + len(m.group(0).rstrip())]
+                        x0 = min(c["bbox"][0] for c in glyphs)
+                        x1 = max(c["bbox"][2] for c in glyphs)
+                    else:
+                        x0 = sx0 + cw * m.start()
+                        x1 = min(sx0 + cw * m.end(), sx1)
+                    out.append(
+                        {
+                            "x0": round(x0, 2),
+                            "y0": round(sy0, 2),
+                            "x1": round(x1, 2),
+                            "y1": round(sy1, 2),
+                            "t": t,
+                            "size": round(size, 1),
+                            "base": round(base, 2),
+                            "bno": bno,
+                            "lno": lno,
+                            # set sideways, like the arXiv stamp along the first page's edge
+                            "turned": abs(line.get("dir", (1, 0))[0]) < 0.5,
+                        }
+                    )
     return out
 
 
 def _norm_header(text: str) -> str:
-    """Normalize a line for running-header matching: drop digits (page numbers vary),
-    lowercase, collapse whitespace."""
-    return re.sub(r"\s+", " ", re.sub(r"\d+", "", text)).strip().lower()
+    """Normalize a line for running-header matching: its letters only (`_letters`). The page
+    number varies, and so does how it is attached: "1:2 • Kerbl et al." on one page, "1:4" and
+    "• Kerbl et al." as two lines on another."""
+    return _letters(text)
+
+
+def _letters(text: str) -> str:
+    """A line's letters only, case-folded. Two printings of one front-matter line differ in
+    spacing, affiliation digits and quotes ("Graph ..." vs "“Graph ...”"), not in letters."""
+    return "".join(ch for ch in text.casefold() if ch.isalpha())
+
+
+# The Abstract heading: "Abstract", "ABSTRACT", "Abstract.", "Abstract:", or run in
+# ("Abstract—We ..."). Not "abstracting" in the introduction: 2411.14499 has no Abstract
+# heading, and cutting there dropped its abstract and the start of its introduction.
+_ABSTRACT_RE = re.compile(r"(?:Abstract|ABSTRACT)(?:[.:—–-].*)?")
+
+
+def _front_cut(words: list[dict], height: float) -> float:
+    """Where page 0's front matter (title, authors, affiliations) ends: the top of the Abstract
+    heading (the first word of its line), else 22% down the page. `words` carry t, y0, line."""
+    prev = None
+    for w in words:
+        if w["line"] != prev and _ABSTRACT_RE.fullmatch(w["t"]):
+            return w["y0"]
+        prev = w["line"]
+    return height * 0.22
+
+
+def _front_matter(page) -> set[str]:
+    """The letters (`_letters`) of each line of page 0 above the cut (`_front_cut`)."""
+    words = [
+        {"y0": w[1], "y1": w[3], "t": w[4], "line": (w[5], w[6])}
+        for w in page.get_text("words")
+    ]
+    cut = _front_cut(words, page.rect.height)
+    lines: dict[tuple, list[dict]] = {}
+    for w in words:
+        lines.setdefault(w["line"], []).append(w)
+    out = set()
+    for ws in lines.values():
+        t = _letters(" ".join(w["t"] for w in ws))
+        if all(w["y1"] <= cut for w in ws) and len(t) >= 8:
+            out.add(t)
+    return out
+
+
+@functools.lru_cache(maxsize=2)
+def _document_front_matter(pdf_bytes: bytes) -> frozenset[str]:
+    """`_front_matter` of a document's page 0, kept for the document in hand: layout() lays out
+    a page and its two neighbours, and each asks for it."""
+    doc = pymupdf.open(stream=pdf_bytes, filetype="pdf")
+    try:
+        return frozenset(_front_matter(doc[0]))
+    finally:
+        doc.close()
 
 
 def running_headers(pdf_bytes: bytes) -> set[str]:
@@ -717,9 +993,10 @@ def running_headers(pdf_bytes: bytes) -> set[str]:
                         line.get("bbox", (0, 0, 0, 0))[1],
                         line.get("bbox", (0, 0, 0, 0))[3],
                     )
-                    if y0 < h * 0.09:
+                    # the bands layout() drops a running head in (3DGS's footer ends at 90.3%)
+                    if y0 < h * 0.12:
                         top[norm] = top.get(norm, 0) + 1
-                    elif y1 > h * 0.93:
+                    elif y1 > h * 0.90:
                         bot[norm] = bot.get(norm, 0) + 1
         # Headers often alternate (author names on even pages, title on odd), so each
         # appears on only ~half the pages; require a third of the sample, not a half.
@@ -731,85 +1008,197 @@ def running_headers(pdf_bytes: bytes) -> set[str]:
         doc.close()
 
 
-# "References"/"Bibliography" are always a real section heading (never a footnote), so they
-# are matched at any readable size; the weaker markers below need body size to avoid firing on
-# a first-page funding/ethics footnote.
-_REF_RE = re.compile(r"^(references?|bibliography)\b", re.IGNORECASE)
-_TAIL_RE = re.compile(
-    r"^(acknowledge?ments?|acknowledgements?|funding|"
-    r"declarations?|data availability|author contributions?|"
-    r"conflicts? of interest|competing interests?|ethics statement)\b",
-    re.IGNORECASE,
+# The references heading, alone on its line: "References", "REFERENCES", "7 References",
+# "References and Notes", "Bibliography". Matched at any readable size. Acknowledgements,
+# funding and the like are translated. A line of prose that starts with the word is not the
+# heading: "reference of 17,135 actions." cost 2610.02200 ten pages of results, and a figure
+# label "reference" cost 2610.10489 its Methods.
+_REF_RE = re.compile(
+    r"(?:\d+\.?\s+|[IVX]+\.\s+)?"
+    r"(?:R ?(?i:eferences?(?:\s+and\s+notes)?)|B(?i:ibliography))\s*[.:]?"
+)
+# A line of a reference list: a year, an entry number ("[12] ..."), arXiv/doi/a URL, "et al",
+# "Proceedings"/"Proc.", or a page range ("pp. 12"). On every reference page of 31 papers a
+# quarter of the lines or more have one; a page of figures or prose after them has almost none.
+_BIB_RE = re.compile(
+    r"\b(?:19|20)\d{2}[a-z]?\b|^\[\d+\]|arXiv|doi|https?://|\bet al\b|\bProc\.|"
+    r"\bProceedings\b|\bpp\. ?\d"
 )
 # An appendix / supplementary section that follows the references — real content, kept.
 # Matches "Appendix", "Supplementary ...", a lone section letter ("A", "B"), or "A Title".
-_APPENDIX_RE = re.compile(r"^(appendix\b|supplementary\b|[A-Z]\.?\s+[A-Z]|[A-Z]$)")
+# The words in any case ("APPENDIX A", "Supplementary Material"); the letter forms stay
+# uppercase, so a lowercase line ("a note on ...") is not taken for a section letter.
+_APPENDIX_RE = re.compile(r"^((?i:appendix|supplementary)\b|[A-Z]\.?\s+[A-Z]|[A-Z]$)")
+# A page number ("12", "1:4" in ACM's "1:4 • Kerbl et al.", "xii") or a line without a letter
+# or digit ("•", "□").
+_PAGE_NUMBER = re.compile(r"\W*|\d+(?:[:.–-]\d+)*|[ivxlcdm]+|[IVXLCDM]+")
+# A figure/table caption's label: "Table 5.", "TABLE V:", "Figure 3:", "Fig. 2", "F IG . 1:".
+_CAPTION_LABEL = re.compile(
+    r"(?:Table|TABLE|Fig(?:ure)?\.?|FIG(?:URE)?\.?|F IG \.)\s*(?:[A-Z]?\d+|[IVX]+\b)"
+)
 
-# Position in the document as (page_index, y); compares in reading order.
-Pos = tuple[int, float]
+# Position in the document as (page_index, y, x): a heading's top and its LINE's left edge,
+# the same x that places a word in its column (_skipped), so the two always compare alike.
+Pos = tuple[int, float, float]
 SkipRange = tuple[Pos, Pos | None]  # (start, end-exclusive); end None = to document end
+
+
+def _two_columns(page) -> bool:
+    """True when the page's prose is set in two columns: most of its wide text lines stay on
+    one side of the page's middle (a one-column page's lines run across it)."""
+    w = page.rect.width
+    sides = [
+        x1 < w / 2 + 5 or x0 > w / 2 - 5
+        for block in page.get_text("dict").get("blocks", [])
+        if block.get("type") == 0
+        for x0, _, x1, _ in (line["bbox"] for line in block.get("lines", []))
+        if x1 - x0 > 0.3 * w
+    ]
+    return bool(sides) and sum(sides) >= 0.7 * len(sides)
+
+
+def _reading_key(y: float, x: float, width: float, two_col: bool) -> tuple[int, float]:
+    """Where a line starting at x falls in a page's reading order: column first, then height.
+    On a two-column page the whole left column is read before the right one, so "below" a
+    heading in the right column does not include the left column's foot. The column split is
+    _two_columns' own (a right-column line starts past the middle less 5pt); a line across
+    both columns starts on the left and reads before them."""
+    return (int(two_col and x > width / 2 - 5), y)
 
 
 def end_matter_range(
     pdf_bytes: bytes, headers: set[str] | None = None
 ) -> SkipRange | None:
-    """The span of end matter to skip in translation: from the first References/
-    Acknowledgements/Funding heading to the start of the appendix that follows it (exclusive),
-    or to the document end when no appendix follows. Returns (start, end) as (page, y)
-    positions, or None if there is no such section. An appendix after the references IS kept —
-    it is real content. Page 0 is excluded, and a heading must be at least body size (~10pt),
-    so an author-funding footnote never triggers it. Running-header lines (e.g. 'A PREPRINT')
-    are ignored so they are not mistaken for an appendix start that would leak the references."""
+    """The span of end matter to skip in translation: from the References heading to the start
+    of the appendix that follows it (exclusive), or to the document end when no appendix
+    follows. Returns (start, end) as (page, y, x) positions, or None if there is no such
+    section. An appendix after the references IS kept — it is real content. Page 0 is
+    excluded. Running-header lines (e.g. 'A PREPRINT') are ignored so they are not mistaken for
+    an appendix start that would leak the references. On a two-column page the first heading
+    is the first in reading order, not the topmost."""
     hdrs = headers or set()
     doc = pymupdf.open(stream=pdf_bytes, filetype="pdf")
     try:
         n = doc.page_count
 
-        def headings(pno):
-            for block in doc[pno].get_text("dict").get("blocks", []):
-                if block.get("type") != 0:
-                    continue
-                for line in block.get("lines", []):
-                    spans = line.get("spans", [])
-                    t = "".join(s.get("text", "") for s in spans).strip()
-                    if (
-                        _norm_header(t) in hdrs
-                    ):  # running header/footer, not a section title
-                        continue
-                    sz = max((s.get("size", 0.0) for s in spans), default=0.0)
-                    yield t, sz, line.get("bbox", (0, 0, 0, 0))[1]
+        # Each page's lines and column count are read once: the checks below go over the same
+        # pages several times.
+        page_lines: dict[int, list[tuple[str, float, float, float]]] = {}
+        page_two: dict[int, bool] = {}
 
+        def headings(pno) -> list[tuple[str, float, float, float]]:
+            """A page's lines as (text, size, y, x), less its running heads."""
+            if pno not in page_lines:
+                out = []
+                for block in doc[pno].get_text("dict").get("blocks", []):
+                    if block.get("type") != 0:
+                        continue
+                    for line in block.get("lines", []):
+                        spans = line.get("spans", [])
+                        t = "".join(s.get("text", "") for s in spans).strip()
+                        if (
+                            _norm_header(t) in hdrs
+                        ):  # a running head, not a section title
+                            continue
+                        sz = max((s.get("size", 0.0) for s in spans), default=0.0)
+                        x0, y0, _, _ = line.get("bbox", (0, 0, 0, 0))
+                        out.append((t, sz, y0, x0))
+                page_lines[pno] = out
+            return page_lines[pno]
+
+        def two_col(pno) -> bool:
+            if pno not in page_two:
+                page_two[pno] = _two_columns(doc[pno])
+            return page_two[pno]
+
+        def before(pno, y, x, pos: Pos) -> bool:
+            return _before(doc[pno], (y, x), pos, two_col(pno))
+
+        def first(pno, found):
+            """The first of `found` [(y, x)] in the page's reading order, as a Pos."""
+            w, two = doc[pno].rect.width, two_col(pno)
+            y, x = min(found, key=lambda p: _reading_key(p[0], p[1], w, two))
+            return (pno, y, x)
+
+        def text_lines(pno, after: Pos | None = None) -> list[str]:
+            """The lines of three words or more on a page (after `after`, if given)."""
+            return [
+                t
+                for t, sz, y, x in headings(pno)
+                if len(t.split()) >= 3
+                and (after is None or not before(pno, y, x, after))
+            ]
+
+        def bibliographic(lines: list[str]) -> bool:
+            return sum(bool(_BIB_RE.search(t)) for t in lines) >= 0.1 * len(lines)
+
+        # The References heading, if a reference list follows it.
         start: Pos | None = None
         for pno in range(1, n):
-            ys = [
-                y
-                for t, sz, y in headings(pno)
-                if t
-                and len(t.split()) <= 6
-                and ((sz >= 7 and _REF_RE.match(t)) or (sz >= 9 and _TAIL_RE.match(t)))
+            found = [
+                (y, x)
+                for t, sz, y, x in headings(pno)
+                if sz >= 7 and _REF_RE.fullmatch(t)
             ]
-            if ys:
-                start = (pno, min(ys))
-                break
+            if found:
+                pos = first(pno, found)
+                after = text_lines(pno, pos)
+                if pno + 1 < n:
+                    after += text_lines(pno + 1)
+                if after and bibliographic(after):
+                    start = pos
+                    break
         if start is None:
             return None
 
-        # Resume point: the first appendix/supplementary heading at/after the references. Take
-        # the topmost such heading on its page (block order is not strictly top-to-bottom).
+        # Resume point: the first appendix/supplementary heading after the references. It
+        # stands out from the reference list (its median size + 1pt; 11pt always does): 3DGS
+        # and 2411.14499 set the letter "A" at 10pt over 7-8pt references.
+        sizes = [
+            sz
+            for t, sz, y, x in headings(start[0])
+            if t and not before(start[0], y, x, start)
+        ]
+        if start[0] + 1 < n:
+            sizes += [sz for t, sz, y, x in headings(start[0] + 1) if t]
+        big = min(11.0, statistics.median(sizes) + 1) if sizes else 11.0
+        end: Pos | None = None
         for pno in range(start[0], n):
-            ys = [
-                y
-                for t, sz, y in headings(pno)
-                if sz >= 11
+            found = [
+                (y, x)
+                for t, sz, y, x in headings(pno)
+                if sz >= big
                 and len(t.split()) <= 7
                 and _APPENDIX_RE.match(t)
-                and not (pno == start[0] and y < start[1])
+                and not (pno == start[0] and before(pno, y, x, start))
             ]
-            if ys:
-                return (start, (pno, min(ys)))
-        return (start, None)
+            if found:
+                end = first(pno, found)
+                break
+        # A whole page that is not a reference list ends the range at its top, whatever its
+        # headings: the Transformer paper's attention visualizations (an appendix titled
+        # "Attention Visualizations") were skipped to the end of the document.
+        for pno in range(start[0] + 1, end[0] if end else n):
+            lines = text_lines(pno)
+            if lines and not bibliographic(lines):
+                end = (pno, 0.0, 0.0)
+                break
+        return (start, end)
     finally:
         doc.close()
+
+
+def _before(
+    page, point: tuple[float, float], pos: Pos, two_col: bool | None = None
+) -> bool:
+    """True when `point` (y, x of its line's left edge) on `pos`'s page comes before the heading
+    at `pos` in reading order. 2pt of slack: a heading split into lines ("A" + "Implementation Details") has lines
+    whose tops differ by a hair, and all of it belongs to the heading."""
+    w = page.rect.width
+    two = _two_columns(page) if two_col is None else two_col
+    col, y = _reading_key(point[0], point[1], w, two)
+    pcol, py = _reading_key(pos[1], pos[2], w, two)
+    return col < pcol or (col == pcol and y < py - 2)
 
 
 def _in_rects(cx: float, cy: float, rects: list) -> bool:
@@ -827,15 +1216,25 @@ def _starts_lower(text: str) -> bool:
     return bool(t) and t[0].isalpha() and t[0].islower()
 
 
+def _tail_idx(page: dict) -> int | None:
+    """Index of a page's last sentence that is not an aside (a footnote or a rescued caption,
+    read after the page's text): a sentence the page break cuts continues past them."""
+    for j in range(len(page["sentences"]) - 1, -1, -1):
+        if not page["sentences"][j].get("aside"):
+            return j
+    return None
+
+
 def _tail_unfinished(page: dict) -> bool:
     """True when a page's last sentence is a prose fragment that wraps to the next page. It
     must be a real mid-sentence break: not a heading or equation, no terminal punctuation, and
     ending in a lowercase letter or comma. This excludes equations (end in a symbol/number),
     captions and sentences closing on a citation bracket or a colon — which are complete even
     without a period — so their following page is never stitched onto them."""
-    if not page["sentences"]:
+    j = _tail_idx(page)
+    if j is None:
         return False
-    last = page["sentences"][-1]
+    last = page["sentences"][j]
     if last.get("heading") or last.get("equation"):
         return False
     t = last["text"].rstrip()
@@ -857,8 +1256,8 @@ def _continuation_idx(page: dict, max_scan: int = 16) -> int | None:
     for j, s in enumerate(page["sentences"]):
         if s.get("heading"):
             return None  # a new section starts before any continuation → no stitch
-        if s.get("caption"):
-            continue  # inside a model caption box: never the continuation, not counted
+        if s.get("caption") or s.get("aside"):
+            continue  # a caption or a footnote: never the continuation, not counted
         if seen >= max_scan:
             return None
         seen += 1
@@ -876,9 +1275,10 @@ def _tail_open(page: dict) -> bool:
     """True when a page's last sentence is prose that does not end a sentence at all (no .!? and
     no closing colon). Wider than _tail_unfinished: it also admits a tail closing on ')' or an
     uppercase acronym ("...Modulation (FiLM)"), which may only be stitched to a citation."""
-    if not page["sentences"]:
+    j = _tail_idx(page)
+    if j is None:
         return False
-    last = page["sentences"][-1]
+    last = page["sentences"][j]
     if last.get("heading") or last.get("equation"):
         return False
     t = last["text"].rstrip()
@@ -898,7 +1298,7 @@ def _stitch_idx(prev: dict, nxt: dict) -> int | None:
             return j
     if _tail_open(prev):
         for j, s in enumerate(nxt["sentences"]):
-            if s.get("equation"):
+            if s.get("equation") or s.get("aside"):
                 continue
             if s.get("heading"):
                 return None
@@ -937,13 +1337,18 @@ def layout(
         j = _stitch_idx(core, nxt)
         if j is not None:
             frag = nxt["sentences"][j]
-            last = core["sentences"][-1]
+            last = core["sentences"][_tail_idx(core)]
             tail = last["text"]
+
             # Rejoin a word the page break split with a hyphen ("applicabil-" + "ity").
-            if re.search(r"[a-z]-$", tail):
-                last["text"] = tail[:-1] + frag["text"]
-            else:
-                last["text"] = (tail + " " + frag["text"]).strip()
+            def _join(a: str, b: str) -> str:
+                return a[:-1] + b if re.search(r"[a-z]-$", a) else (a + " " + b).strip()
+
+            if "tex" in last or "tex" in frag:
+                last["tex"] = _join(
+                    last.get("tex", tail), frag.get("tex", frag["text"])
+                )
+            last["text"] = _join(tail, frag["text"])
             last["cont_next_page"] = page_index + 1
             last["words_next"] = [
                 {k: nxt["words"][i][k] for k in ("x0", "y0", "x1", "y1")}
@@ -966,10 +1371,14 @@ def _joins_line(prev: dict, nxt: dict) -> bool:
     So does a narrow glyph fragment that touches `prev` and overlaps it vertically: a radical,
     integral, or large operator is drawn well above or below the baseline, so its center sits
     too far from the line's to pass the baseline test (e.g. "O(" then a raised "√" in "O(√d)").
+    A fragment that opens with a stacked subscript ("{ã^j}_{j=1}^{N}" + "are used") starts under
+    the superscript that ends `prev`, so it may start up to 2.5 em left of prev's end.
     The width guard keeps a two-column row apart; its halves are wide and far apart."""
     size = prev["size"] or nxt["size"] or 10
     gap = nxt["left"] - prev["right"]
-    if not -size <= gap <= size * 1.8:
+    sizes = nxt.get("sizes") or []
+    back = size * (2.5 if sizes and sizes[0] <= 0.85 * size else 1)
+    if not -back <= gap <= size * 1.8:
         return False
     if abs(nxt["cy"] - prev["cy"]) <= max(prev["h"], nxt["h"]) * 0.6:
         return True
@@ -1007,20 +1416,30 @@ def _page_layout(
         # End matter (references/acknowledgements/funding) is not translated. `skip` is a
         # (start, end) range in reading order; a page wholly inside it is empty, and on its
         # boundary pages the words inside the range are dropped. An appendix after the range
-        # is outside it and stays translatable.
-        def _skipped(y0: float) -> bool:
+        # is outside it and stays translatable. Reading order is column-aware (_before).
+        two_col = (
+            _two_columns(page)
+            if skip is not None and page_index in (skip[0][0], skip[1] and skip[1][0])
+            else False
+        )
+
+        def _skipped(w) -> bool:
             if skip is None:
                 return False
-            (sp, sy), end = skip
-            if not (page_index > sp or (page_index == sp and y0 >= sy - 2)):
+            start, end = skip
+            # a word's column is its LINE's: a caption across both columns starts on the left
+            # and is read before both, though half of its words lie over the right column
+            at = (w["y0"], line_x[(w["bno"], w["lno"])][0])
+            if page_index < start[0] or (
+                page_index == start[0] and _before(page, at, start, two_col)
+            ):
                 return False
-            if end is None:
+            if end is None or page_index < end[0]:
                 return True
-            ep, ey = end
-            return page_index < ep or (page_index == ep and y0 < ey)
+            return page_index == end[0] and _before(page, at, end, two_col)
 
         if skip is not None:
-            (sp, _sy), end = skip
+            sp, end = skip[0][0], skip[1]
             fully_inside = sp < page_index and (end is None or page_index < end[0])
             if fully_inside:
                 return {
@@ -1051,37 +1470,88 @@ def _page_layout(
                 if r["role"] in roles
             ]
 
-        regions = _rects({"figure", "table", "furniture"})
         keep_rects = _rects({"body", "title", "caption"})
         title_rects = _rects({"title"})
         caption_rects = _rects({"caption"})
         formula_rects = _rects({"formula"})
+        # The model's "abandon" class holds running heads and page numbers, but also footnotes
+        # and now and then a heading it mistook, so a furniture box drops nothing by itself:
+        # what goes is decided by the text (repetition, a bare page number) further down.
+        furniture = _rects({"furniture"})
+        regions = _rects({"figure", "table"})
 
-        def _drop(w) -> bool:
+        styled = _words_with_style(page)
+        # A caption the model left inside its table/figure box ("Table 5. Error rates ...") is
+        # kept: a PDF block whose first line opens with a caption label is never dropped, nor
+        # is such a line inside a block of table cells (the PDF may put both in one block).
+        line_words: dict[tuple, list[str]] = {}
+        for w in styled:
+            line_words.setdefault((w["bno"], w["lno"]), []).append(w["t"])
+        label_lines = {
+            k for k, ts in line_words.items() if _CAPTION_LABEL.match(" ".join(ts))
+        }
+        label_blocks = {
+            b
+            for b, lno in label_lines
+            if lno == min(n for c, n in line_words if c == b)
+        }
+        # A word in a side margin goes only when its whole line is there (the arXiv stamp, line
+        # numbers): on a narrow page a body line starts inside the 44pt margin, and its first
+        # word ("to") must stay.
+        line_x: dict[tuple, tuple[float, float]] = {}
+        for w in styled:
+            x0, x1 = line_x.get((w["bno"], w["lno"]), (w["x0"], w["x1"]))
+            line_x[(w["bno"], w["lno"])] = (min(x0, w["x0"]), max(x1, w["x1"]))
+
+        def _in_drop_region(w) -> bool:
             cx, cy = (w["x0"] + w["x1"]) / 2, (w["y0"] + w["y1"]) / 2
-            if (
-                w["x1"] <= ml
-                or w["x0"] >= pw - mr
-                or w["y1"] <= mt
-                or w["y0"] >= ph - mb
-            ):
-                return True
-            if _skipped(w["y0"]):
-                return True
             # A region the model typed as text/caption wins over an overlapping figure/table box:
             # tables and figures sometimes bleed into the adjacent column at their edges.
             if _in_rects(cx, cy, keep_rects):
                 return False
             return any(r.x0 <= cx <= r.x1 and r.y0 <= cy <= r.y1 for r in regions)
 
-        raw = [w for w in _words_with_style(page) if not _drop(w)]
-        # On page 1, drop everything above the Abstract (title, authors, affiliations).
+        # A figure/table box that covers only part of a PDF line (its edge over a caption or a
+        # footnote, or a line running out of the box) decides the WHOLE line by its first word:
+        # half a line kept reads as a broken sentence ("Here the [results are on the COCO ...]").
+        line_dropped: dict[tuple, bool] = {}
+        rescued: set[tuple] = set()  # caption lines kept inside a figure/table box
+        for w in styled:
+            key = (w["bno"], w["lno"])
+            if key not in line_dropped:
+                boxed = _in_drop_region(w)
+                label = w["bno"] in label_blocks or key in label_lines
+                line_dropped[key] = boxed and not label
+                if boxed and label:
+                    rescued.add(key)
+
+        def _drop(w) -> bool:
+            lx0, lx1 = line_x[(w["bno"], w["lno"])]
+            if lx1 <= ml or lx0 >= pw - mr or w["y1"] <= mt or w["y0"] >= ph - mb:
+                return True
+            if _skipped(w):
+                return True
+            return line_dropped[(w["bno"], w["lno"])]
+
+        raw = [w for w in styled if not _drop(w)]
+        # On page 1, drop everything above the Abstract (title, authors, affiliations), except a
+        # figure caption: a teaser figure above the Abstract (SAM) has a caption to translate.
         if page_index == 0:
-            cut = next(
-                (w["y0"] for w in raw if w["t"].lower().startswith("abstract")),
-                ph * 0.22,
+            cut = _front_cut(
+                [
+                    {"t": w["t"], "y0": w["y0"], "line": (w["bno"], w["lno"])}
+                    for w in raw
+                ],
+                ph,
             )
-            raw = [w for w in raw if w["y1"] > cut]
+            raw = [
+                w
+                for w in raw
+                if w["y1"] > cut
+                or _in_rects(
+                    (w["x0"] + w["x1"]) / 2, (w["y0"] + w["y1"]) / 2, caption_rects
+                )
+            ]
 
         words = [
             {"x0": w["x0"], "y0": w["y0"], "x1": w["x1"], "y1": w["y1"], "t": w["t"]}
@@ -1103,6 +1573,7 @@ def _page_layout(
                     "y0": [],
                     "y1": [],
                     "x0": [],
+                    "turned": w["turned"],
                 }
             cur_line["widx"].append(gi)
             cur_line["sizes"].append(w["size"])
@@ -1166,25 +1637,67 @@ def _page_layout(
             merged_lines.append(ln)
         lines = merged_lines
 
-        # Drop running headers/footers (repeated top/bottom lines across pages).
-        if headers:
-            lines = [
-                ln
-                for ln in lines
-                if not (
-                    _norm_header(ln["text"]) in headers
-                    and (ln["top"] < ph * 0.12 or ln["bottom"] > ph * 0.90)
+        # Drop running heads and page numbers, by their text, not by height alone. A line repeated
+        # across pages (`headers`) goes when it is in the page's top or bottom band, or inside a
+        # model furniture box wherever that is; a bare page number ("12", "1:4", "xii"), a lone
+        # symbol or text set sideways (the arXiv stamp) goes when it is in a furniture box. The
+        # rest of a furniture box is kept.
+        for ln in lines:
+            ln["furniture"] = _in_rects(
+                ln["cx"], ln["cy"], furniture
+            ) and not _in_rects(ln["cx"], ln["cy"], keep_rects)
+        lines = [
+            ln
+            for ln in lines
+            if not (
+                _norm_header(ln["text"]) in (headers or ())
+                and (
+                    ln["furniture"] or ln["top"] < ph * 0.12 or ln["bottom"] > ph * 0.90
                 )
-            ]
+            )
+            and not (
+                ln["furniture"]
+                and (ln["turned"] or _PAGE_NUMBER.fullmatch(ln["text"].strip()))
+            )
+        ]
 
         # A line is a heading when its center is inside a model title box. A font/number heuristic
         # supplement was tried and measured against arXiv .tex: it dropped precision ~10 points
         # (flagging numbered algorithm steps and short lines) while barely moving recall and NOT
         # recovering the one pathological old-journal paper the model misses — so pure title-box
         # detection is kept. A title box may omit a detached section number, so the lone-number
-        # merge below still pairs a standalone "2.1" with the title that follows.
+        # merge below still pairs a standalone "2.1" with the title that follows. "title" is the
+        # index of the line's box: the lines of one box are one heading.
         for ln in lines:
-            ln["heading"] = _in_rects(ln["cx"], ln["cy"], title_rects)
+            ln["title"] = next(
+                (
+                    k
+                    for k, r in enumerate(title_rects)
+                    if r.x0 <= ln["cx"] <= r.x1 and r.y0 <= ln["cy"] <= r.y1
+                ),
+                None,
+            )
+            ln["heading"] = ln["title"] is not None
+
+        # Asides, read after the page's text: footnotes, and figure/table captions. A caption is
+        # a model figure/table caption box (the whole PDF block when the box covers only some of
+        # its lines) or a caption rescued from a table box. An equation number ("(5.7)"), also
+        # a model caption, stays in place.
+        cap_rects = [
+            pymupdf.Rect(r["x0"], r["y0"], r["x1"], r["y1"])
+            for r in yregions
+            if r.get("cls") in ("figure_caption", "table_caption")
+        ]
+        cap_blocks = {
+            ln["key"][0] for ln in lines if _in_rects(ln["cx"], ln["cy"], cap_rects)
+        }
+        for ln in lines:
+            if ln["furniture"]:
+                ln["aside"] = "foot"
+            elif ln["key"] in rescued or ln["key"][0] in cap_blocks:
+                ln["aside"] = "caption"
+            else:
+                ln["aside"] = None
 
         # Merge a lone section-number line ("1", "2.2") into the title that follows, so it reads
         # "1 Introduction" / "2.1 Denoising ...". Many papers typeset the number as a separate
@@ -1222,16 +1735,70 @@ def _page_layout(
         #    sentence AND the next line is reading-adjacent (same column just below, or the
         #    top of the next column) — so a sentence can span columns without gluing
         #    far-apart blocks (e.g. keywords and a figure caption).
-        paras = []
-        cur = None
-        prev = None
-        prev_ended = True
-        for ln in lines:
-            in_eq = cur is not None and cur.get("equation")
-            is_eq_line = bool(ln.get("math"))
-            if is_eq_line and not ln["heading"]:
-                # display-equation line: keep whole; consecutive equation lines merge.
-                if in_eq:
+        def _paragraphs(lines: list[dict], captions: bool = False) -> list[dict]:
+            """Paragraphs of `lines`. With `captions`, a line that opens with a caption label
+            ("Figure 6.") starts a new paragraph: it is the next caption."""
+            paras = []
+            cur = None
+            prev = None
+            prev_ended = True
+            # the title box of the line just read, if it was a heading
+            last_title = None
+            for ln in lines:
+                in_eq = cur is not None and cur.get("equation")
+                is_eq_line = bool(ln.get("math"))
+                if is_eq_line and not ln["heading"]:
+                    # display-equation line: keep whole; consecutive equation lines merge.
+                    if in_eq:
+                        cur["widx"].extend(ln["widx"])
+                    else:
+                        if cur:
+                            paras.append(cur)
+                        cur = {
+                            "widx": list(ln["widx"]),
+                            "size": ln["size"],
+                            "heading": False,
+                            "equation": True,
+                        }
+                    prev, prev_ended = ln, True
+                    last_title = None
+                    continue
+                if ln["heading"]:
+                    # A wrapped title ("5 OPTIMIZATION WITH ADAPTIVE DENSITY" + "CONTROL OF 3D
+                    # GAUSSIANS") is one heading: its lines share a title box. A section and its
+                    # first subsection right below it have a box each.
+                    if ln["title"] is not None and ln["title"] == last_title:
+                        paras[-1]["widx"].extend(ln["widx"])
+                        continue
+                    if cur:
+                        paras.append(cur)
+                    paras.append(
+                        {"widx": list(ln["widx"]), "size": ln["size"], "heading": True}
+                    )
+                    cur, prev, prev_ended = None, None, True
+                    last_title = ln["title"]
+                    continue
+                last_title = None
+                if cur is not None and cur.get("equation"):
+                    paras.append(cur)  # a prose line ends the equation paragraph
+                    cur = None
+                cont = False
+                if cur is not None and prev is not None:
+                    if ln["key"][0] == prev["key"][0]:  # same block
+                        cont = True
+                    elif not prev_ended and not (
+                        captions and _CAPTION_LABEL.match(ln["text"])
+                    ):
+                        gap = _line_gap(prev, ln)
+                        same_col = (
+                            abs(ln["left"] - prev["left"]) < 40
+                            and -5 <= gap <= prev["h"] * 2.2
+                        )
+                        col_jump = (
+                            ln["left"] > prev["left"] + 120 and ln["top"] < prev["top"]
+                        )
+                        cont = same_col or col_jump
+                if cont:
                     cur["widx"].extend(ln["widx"])
                 else:
                     if cur:
@@ -1240,47 +1807,38 @@ def _page_layout(
                         "widx": list(ln["widx"]),
                         "size": ln["size"],
                         "heading": False,
-                        "equation": True,
                     }
-                prev, prev_ended = ln, True
-                continue
-            if ln["heading"]:
-                if cur:
-                    paras.append(cur)
-                paras.append(
-                    {"widx": list(ln["widx"]), "size": ln["size"], "heading": True}
-                )
-                cur, prev, prev_ended = None, None, True
-                continue
-            if cur is not None and cur.get("equation"):
-                paras.append(cur)  # a prose line ends the equation paragraph
-                cur = None
-            cont = False
-            if cur is not None and prev is not None:
-                if ln["key"][0] == prev["key"][0]:  # same block
-                    cont = True
-                elif not prev_ended:
-                    gap = _line_gap(prev, ln)
-                    same_col = (
-                        abs(ln["left"] - prev["left"]) < 40
-                        and -5 <= gap <= prev["h"] * 2.2
-                    )
-                    col_jump = (
-                        ln["left"] > prev["left"] + 120 and ln["top"] < prev["top"]
-                    )
-                    cont = same_col or col_jump
-            if cont:
-                cur["widx"].extend(ln["widx"])
-            else:
-                if cur:
-                    paras.append(cur)
-                cur = {"widx": list(ln["widx"]), "size": ln["size"], "heading": False}
-            prev_ended = bool(re.search(r"[.!?][\"')\]]?$", ln["text"].strip()))
-            prev = ln
-        if cur:
-            paras.append(cur)
+                prev_ended = bool(re.search(r"[.!?][\"')\]]?$", ln["text"].strip()))
+                prev = ln
+            if cur:
+                paras.append(cur)
+            return paras
 
-        # 3) Split each paragraph into sentences (equations are kept whole).
+        # Captions, then footnotes, after the page's text: in reading order they sit between the
+        # halves of a sentence that runs from the foot of one column to the top of the next and
+        # split it, or a caption label stuck to it ("... the galaxy auto- Fig. 20."). Over 31
+        # papers this made 75 sentences whole. Captions and footnotes never join each other.
+        paras = _paragraphs([ln for ln in lines if not ln["aside"]])
+        for kind in ("caption", "foot"):
+            group = [ln for ln in lines if ln["aside"] == kind]
+            for p in _paragraphs(group, captions=kind == "caption"):
+                paras.append({**p, "aside": True, "caption": kind == "caption"})
+        line_of = {g: li for li, ln in enumerate(lines) for g in ln["widx"]}
+
+        # An appendix or supplement may open on a cover that repeats page 0's front matter
+        # (title, authors, affiliations). Page 0 drops those lines, so a later paragraph made
+        # only of them goes too; the model may type the author line as a title.
+        front = _document_front_matter(pdf_bytes) if page_index > 0 and paras else set()
+        if front:
+            paras = [
+                p
+                for p in paras
+                if not all(
+                    _letters(lines[line_of[g]]["text"]) in front for g in p["widx"]
+                )
+            ]
+
+        # 3) Split each paragraph into sentences (equations and headings are kept whole).
         sentences = []
         for pid, para in enumerate(paras):
             if para.get("equation"):
@@ -1301,17 +1859,27 @@ def _page_layout(
                     )
                 continue
             text, local = _join_words(para["widx"], words)
-            split = [
-                (st, [g for (a, b, g) in local if a < e and b > s])
-                for s, e, st in _split_sentences(text)
-            ]
+            if para["heading"]:
+                # one title, one segment: the splitter cut "A.1. Pre-training" after "A.1."
+                split = [(0, len(text), text.strip(), [g for *_, g in local])]
+            else:
+                split = [
+                    (s, e, st, [g for (a, b, g) in local if a < e and b > s])
+                    for s, e, st in _split_sentences(text)
+                ]
             near_eq = any(
                 paras[q].get("equation")
                 for q in (pid - 1, pid + 1)
                 if 0 <= q < len(paras)
             )
-            context = 2 if any(len(ix) >= 5 for _, ix in split) else int(near_eq)
-            for st, idxs in split:
+            context = 2 if any(len(ix) >= 5 for *_, ix in split) else int(near_eq)
+            # Inline sub/superscripts, marked for the translator only ("tex"): "text" stays the
+            # plain PDF text that splitting, stitching and quote lookup work on.
+            marks = {}
+            if not para["heading"]:
+                body = statistics.median(raw[g]["size"] for g in para["widx"])
+                marks = _script_roles(para["widx"], words, raw, line_of, body)
+            for s, e, st, idxs in split:
                 # headings/labels are always kept (shown as titles); body uses the filter
                 if idxs and (para["heading"] or _keep_sentence(st, len(idxs), context)):
                     heights = [words[g]["y1"] - words[g]["y0"] for g in idxs]
@@ -1325,13 +1893,22 @@ def _page_layout(
                             "heading": para["heading"],
                         }
                     )
+                    if marks and any(g in marks for g in idxs):
+                        sentences[-1]["tex"] = _mark_scripts(text, s, e, local, marks)
                     w0 = words[idxs[0]]
-                    if _in_rects(
+                    r0 = raw[idxs[0]]
+                    if (
+                        para.get("caption")
+                        or r0["bno"] in label_blocks
+                        or (r0["bno"], r0["lno"]) in label_lines
+                    ) or _in_rects(
                         (w0["x0"] + w0["x1"]) / 2,
                         (w0["y0"] + w0["y1"]) / 2,
                         caption_rects,
                     ):
                         sentences[-1]["caption"] = True
+                    if para.get("aside"):
+                        sentences[-1]["aside"] = True
 
         return {
             "width": round(page.rect.width, 2),

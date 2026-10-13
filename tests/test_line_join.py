@@ -8,13 +8,14 @@ import unittest
 from app.pdf_utils import _joins_line, _line_gap
 
 
-def line(left, right, top, bottom, size=10.0):
+def line(left, right, top, bottom, size=10.0, sizes=None):
     return {
         "left": left,
         "right": right,
         "top": top,
         "bottom": bottom,
         "size": size,
+        "sizes": sizes or [size],
         "h": bottom - top,
         "cy": (top + bottom) / 2,
     }
@@ -42,6 +43,17 @@ class JoinLineTests(unittest.TestCase):
 
     def test_next_wrapped_line_stays_apart(self):
         self.assertFalse(_joins_line(O_PAREN, line(95.9, 300.0, 384.0, 398.0)))
+
+    def test_stacked_subscript_joins_the_line_it_hangs_under(self):
+        # Diffusion Policy p6: "... samples {ã^j}_{j=1}^{N_neg} are used to estimate". The
+        # fragment "j=1 are used to estimate" starts under "N neg", 12 pt left of its end.
+        sup = line(51.0, 210.1, 140.7, 161.1)
+        sub = line(198.1, 291.7, 144.6, 157.7, sizes=[7.4, 7.4, 7.4, 10.0, 10.0])
+        self.assertTrue(_joins_line(sup, sub))
+
+    def test_an_overlapping_full_size_fragment_stays_apart(self):
+        sup = line(51.0, 210.1, 140.7, 161.1)
+        self.assertFalse(_joins_line(sup, line(198.1, 291.7, 144.6, 157.7)))
 
 
 class LineGapTests(unittest.TestCase):

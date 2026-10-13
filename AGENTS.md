@@ -21,7 +21,7 @@ Backend (Claude Code, Hermes, or ChatGPT) — never a billable API key.
   DOI whose record title is not on the first page (a cited work's DOI). Zotero integration
   calls `main._ingest(data, {"key": ..., "doi": ...})`; Zotero's DOI wins.
 - **`app/pdf_utils.py`** turns a PDF page into word geometry + sentences:
-  `get_text("dict")` for per-word position/size, margin filtering, region drop/
+  `get_text("rawdict")` for per-word position/size, margin filtering, region drop/
   heading/equation typing from the layout model's boxes (no font/stroke heuristics —
   see `layout_model.py`), paragraph reconstruction, and sentence splitting via
   **spaCy** (pysbd then regex as fallbacks). Keep it **format-agnostic** — it must
@@ -32,9 +32,11 @@ Backend (Claude Code, Hermes, or ChatGPT) — never a billable API key.
   dependency. It types each page's regions (title/body/figure/table/formula/
   furniture) from a rendered image, and `pdf_utils` trusts those boxes alone: a line
   is a heading only inside a `title` box, a display-equation line only inside a
-  `formula` box, and a word is dropped only inside a `figure`/`table`/`furniture`
-  box (a `body`/`title`/`caption` box overrides an overlapping drop box, so a table
-  that bleeds into the next column does not eat it). There is NO heuristic fallback:
+  `formula` box, and a line is dropped only when its first word is inside a
+  `figure`/`table` box (a `body`/`title`/`caption` box overrides an
+  overlapping drop box, so a table that bleeds into the next column does not eat
+  it). A `furniture` box drops only running heads, page numbers and sideways stamps
+  (see *Running headers*). There is NO heuristic fallback:
   region typing came in two flavours before and the font/stroke heuristics overfit a
   single paper's layout (a full-width false-positive band once swallowed a whole
   column of body text and a section heading), so they were removed. The model is
@@ -153,17 +155,45 @@ Requires Claude Code (`claude`, signed in), Hermes (`hermes setup`), or ChatGPT 
   changes what it emits, and old cached pages are bypassed instead of silently
   reused. Translation caches on a signature of the exact segments, so it follows a
   layout change automatically. Wipe `data/` only when you want a clean rebuild.
+- **When in doubt, translate.** Text translated that need not be costs little; text left
+  untranslated is lost to the reader. Every drop rule below is narrowed to what is surely
+  not content, and was checked against the PDF text of 31 papers (every word that reaches
+  no sentence, by reason).
 - **Running headers/footers are dropped.** `running_headers()` finds lines that
   repeat at the top/bottom across pages (title, venue, 'A PREPRINT', author names)
   and `layout()` removes them, so they are not translated. The threshold is a
   third of the sampled pages, because headers often alternate between even/odd
-  pages — do not raise it back to a half.
-- **Figure- and table-internal text is dropped.** A word is dropped when its center
-  is inside a model `figure`/`table`/`furniture` box. There are no stroke/font-size
-  heuristics any more (they overfit one paper). A `body`/`title`/`caption` box
-  overrides an overlapping drop box, so a table/figure that bleeds into the adjacent
-  column does not eat its neighbour's prose; captions (a `caption` box) stay
-  translatable.
+  pages — do not raise it back to a half. Lines match by their letters only
+  (`_norm_header`): the page number moves ("1:2 • Kerbl et al." vs "1:4" and "• Kerbl et
+  al." as two lines). A repeated line goes in the top 12% / bottom 10% of the page (where
+  it is also counted) or inside a model `furniture` box. Not by height alone: the
+  model's furniture ("abandon") class also holds footnotes and now and then a heading it
+  mistook ("D. Combining Lhybrid and Lvlb Models"), so a furniture box drops only
+  repeated lines, bare page numbers ("12", "1:4", "xii", a lone symbol) and text set
+  sideways (the arXiv stamp along the first page's edge).
+- **Footnotes and figure/table captions come after the page's text.** Footnotes (the rest
+  of a furniture box) and captions are *asides*: their paragraphs are built apart and
+  placed at the end of the page, captions first, flagged `aside`. A caption is a model
+  `figure_caption`/`table_caption` box, taken as its whole PDF block (a box over the first
+  line only split 2506.09985's captions), or a caption rescued from a table box (below); an
+  equation number such as "(5.7)" is a model caption too (`formula_caption`) and stays in
+  place, or lead-ins lose it and adjacent equations merge. In reading order an aside sits
+  between the halves of a sentence that runs from the foot of one column to the top of the
+  next: a footnote split it (1512.03385 p2), and a caption label stuck to it ("... the
+  galaxy auto- Fig. 20."); placing them after the text made 75 sentences whole over 31
+  papers. Captions never join footnotes, and a line opening with a caption label starts a
+  new caption. Asides also hid the page's real last sentence from cross-page stitching, so
+  `_tail_idx` skips them.
+- **Figure- and table-internal text is dropped.** A PDF line is dropped when the center
+  of its first word is inside a model `figure`/`table` box. There are no
+  stroke/font-size heuristics any more (they overfit one paper). A
+  `body`/`title`/`caption` box overrides an overlapping drop box, so a table/figure
+  that bleeds into the adjacent column does not eat its neighbour's prose; captions (a
+  `caption` box) stay translatable. Deciding by the first word means a box that covers
+  only PART of a line takes all of it or none of it, so a box edge over a caption or
+  footnote never leaves half a sentence ("Here the [results are on the COCO ...]"). A
+  caption the box swallowed without a `caption` box is kept: a PDF block whose first line,
+  or a line, opens with a caption label ("Table 5.", "TABLE V:", "Fig. 2", `_CAPTION_LABEL`).
 - **Sentences that wrap across a page break are stitched whole.** `layout()` keeps
   such a sentence on the page where it STARTS: that page absorbs the next page's
   continuation fragment and records its geometry under `words_next` for cross-page
@@ -185,7 +215,8 @@ Requires Claude Code (`claude`, signed in), Hermes (`hermes setup`), or ChatGPT 
   math symbol ("... σ 2" | "I is ..."), a parenthesis, closing punctuation
   (", Hamilton proved"), a line-broken compound ("LIBERO-" | "Long"), a spaced
   abbreviation ("et al ."), or inside a PDF word ("( 2020 );", which then belonged to
-  two sentences and was highlighted with both). `_mend_word_splits` and
+  two sentences and was highlighted with both), or right after a standalone math operator
+  ("w_i / ∑" | "Nc j =1 ..."). `_mend_word_splits` and
   `_merge_fragments` rejoin those; the punctuation- and symbol-led rules apply only
   while the running text is not a finished sentence (`_ends_sentence`, which also
   accepts curly quotes, footnote marks and a spaced ". )"), so two real sentences are
@@ -197,6 +228,25 @@ Requires Claude Code (`claude`, signed in), Hermes (`hermes setup`), or ChatGPT 
   duplicated. A sentence segmenter swap (Stanza, SaT) was measured and rejected: none
   reliably splits comma-joined lists, and both are much slower (Stanza ran 8x slower
   than spaCy on real per-paragraph calls).
+- **Word boxes come from the glyphs.** `_words_with_style()` builds each word's box from its
+  own glyphs (`rawdict`). Do not go back to splitting a span by character count: a justified
+  line often comes as ONE span, the guess drifted up to ~20pt, and a sentence's first capital
+  ("H" of "Here", "LSTM" of "LSTM-GMM") was highlighted with the previous sentence (791
+  glyphs over 31 papers; 0 now). A word in the side margin is dropped only when its whole
+  PDF line is there: on a narrow page a body line starts inside the 44pt margin. A line
+  fragment that opens with a stacked subscript ("{ã^j}_{j=1}^{N}" + "are used") rejoins its
+  line although it starts under the superscript (`_joins_line`). TeX's CMEX10 symbol font is
+  decoded like MathPi (`_CMEX`): its text layer says "P" for "∑", "e" for a wide tilde, "("
+  for a big "{". Only codes the font's own ToUnicode map leaves unmapped are remapped
+  (`_cmex_tables`): pdfTeX's map covers just the tall-delimiter pieces, but a full map reads
+  "(" as a real parenthesis, so a map's mere presence decides nothing.
+- **Inline scripts are marked for the translator only.** A sentence with inline
+  sub/superscripts also carries `tex` ("{ ˜ a ^{j} } ^{N neg} _{j = 1}"), and the browser
+  sends `tex` for translation; `text` stays plain, because splitting, page stitching and the
+  anatomy quote lookup match on it. A script is a smaller word whose baseline sits above or
+  below its line's, ATTACHED to the glyph before it (`_script_roles`), so an inline fraction
+  ("≜ β²₁/√β₂", after a gap) is not mistaken for scripts. Measured on 9 inline-math sentences,
+  2 runs each: unmarked 31/34 expressions right ("ã_j" for "ã^j", "k^q_cmp"), marked 34/34.
 - **Highlights follow lines, not glyph boxes.** `lineRects()` in `web/app.js` folds a
   script-size glyph into its line's rect instead of opening a second, overlapping
   rect, and attaches tall TeX math-font boxes (CMSY10/CMEX10, which PyMuPDF sizes from
@@ -215,18 +265,48 @@ Requires Claude Code (`claude`, signed in), Hermes (`hermes setup`), or ChatGPT 
   `devicePixelRatio` (Retina) up to `MAX_CANVAS_PX`, and a page more than 3000px from the
   view gives its canvas and text layer back (`onPageFar`), so memory stays bounded at a
   high zoom. 100% is the paper's real size (96/72 CSS px per point).
-- **End matter is not translated, but the appendix is.** `end_matter_range()`
-  finds the References/Acknowledgements/Funding span (page 0 is excluded so an
-  author-funding footnote never triggers it) and returns a (start, end) range that
-  stops at the first appendix/supplementary heading after it. `layout()` drops
-  words inside the range; an appendix that follows the references is outside it and
-  is translated normally. This is why the skip is a *range*, not just a start.
+- **The reference list is not translated; everything else is.** `end_matter_range()`
+  returns the (start, end) range of the reference list, and `layout()` drops words
+  inside it. Acknowledgements, funding and the like are translated.
+  - It starts at a References heading (`_REF_RE`): the WHOLE line, capitalized, so a
+    line of prose that starts with the word does not ("reference of 17,135 actions."
+    cost 2610.02200 ten pages; a figure label "reference" cost 2610.10489 its Methods),
+    and only if a reference list follows (`_BIB_RE`: a tenth of the lines or more carry
+    a year, "[12]", arXiv/doi/a URL, "et al", "Proceedings", "pp. 12"; every reference
+    page of 31 papers has a quarter or more).
+  - It ends at the first appendix/supplementary heading after it, which must stand out
+    from the list: its median size + 1pt (11pt always does; 3DGS sets "A" at 10pt over
+    7pt references). It also ends at the top of the first page that is not a reference
+    list, whatever that page's headings (the Transformer paper's "Attention
+    Visualizations"), so a missed appendix heading costs at most the rest of one page.
+  - The ends compare in READING order (`_before`): on a two-column page the whole left
+    column is read before the right one, so a right-column heading does not drop the
+    left column's foot (Diffusion Policy lost "Limitations and Future Work" that way),
+    and a word takes its LINE's column, so a caption across both columns stays whole.
+    Both ends allow 2pt: an appendix title split into lines ("A" + "Implementation
+    Details") is kept whole.
 - **Heading detection is the model's `title` boxes.** A line is a heading only when
   its center is inside a `title` box (no font-size/bold/numbered-pattern heuristics).
   One reading-order fix survives because it is not region typing: a lone section
   number typeset as its own element ("2.1" on its own line) is merged into the
   title-like line that follows and the pair is marked a heading, since a `title` box
-  often omits the detached number.
+  often omits the detached number. The lines of one `title` box are ONE heading, never
+  cut into sentences: a wrapped title came out as two headings, and the splitter cut
+  "A.1. Pre-training" after "A.1." (58 such headings over 31 papers). A section and its
+  first subsection right below it have a box each, so they stay apart.
+- **Page 0 drops its front matter, above the Abstract heading.** The heading is a word
+  that opens its line and reads "Abstract"/"ABSTRACT", alone or followed by punctuation
+  ("Abstract—We ...", `_ABSTRACT_RE`); "abstracting" in 2411.14499's introduction (which
+  has no Abstract heading) cut away its abstract and introduction. Without the heading
+  the cut is 22% down the page. A figure caption above the Abstract (SAM's teaser) is kept.
+- **An appendix cover's copy of the front matter is dropped.** Page 0 drops everything
+  above the Abstract (title, authors, affiliations; `_front_cut`). An appendix or
+  supplement often opens on a cover that repeats those lines, and the model may type its
+  author line as a title (2007.06559: four author "headings"). On a later page, a
+  paragraph made only of lines that repeat page 0's front matter is dropped
+  (`_front_matter`, compared by letters only, since the copies differ in spacing,
+  affiliation digits and quotes). A cover title that adds words ("Appendix for ...")
+  is not a pure copy and stays.
 - **Line-break hyphens are rejoined.** `_join_words()` turns 'to-' + 'kens' (split
   across a line) into 'tokens' for the sentence text, while keeping both word
   boxes for highlighting. Suspended hyphens ('code- and reasoning-related') are
