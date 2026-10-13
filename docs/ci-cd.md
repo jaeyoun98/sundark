@@ -7,24 +7,60 @@ and preserves its **Check code formatting** check name. It runs for PRs targetin
 `main` or `develop`, pushes to `main`, and manual dispatch. There are no path
 filters, so a required check also runs for documentation-only PRs.
 
-The Ubuntu 24.04 job installs Python from `.python-version` (3.12), uv 0.10.0,
-and Node 24. It runs Ruff 0.14.10 formatting/import lint, validates and installs
-`uv.lock` with `uv sync --locked`, runs the Python unittest suite (including its
-Node regression scripts), and checks `web/app.js` syntax. uv's dependency cache
-is keyed on the lockfile, project metadata, Python pin, and workflow. Actions are
-pinned to full commit SHAs; update the SHA and version comment together.
+The Ubuntu 24.04 job installs Python from `.python-version` (3.12), the current
+stable uv, and Node 24. `uv sync --locked` validates project metadata and installs
+runtime and development dependencies from `uv.lock`. It runs Ruff formatting/import
+lint, the Python unittest suite (including its Node regression scripts), and
+`web/app.js` syntax checks. uv's cache is keyed on the lockfile, project metadata,
+Python selection, and workflow.
+
+Versions are selected at the level needed for compatibility: Python 3.12 and
+Node 24 accept patch updates; Actions use major tags; uv has no exact version pin.
+Ruff and TestClient's httpx are declared as development dependencies with lower
+bounds in `pyproject.toml`. Their resolved versions live in the same lockfile as
+runtime dependencies, so local and CI checks agree without duplicating exact
+pins in the workflow. Refresh deliberately with `uv lock --upgrade-package ruff`
+(or the dependency being updated), and commit the lockfile. Runtime package
+versions are preserved by this CI change.
+
+`requires-python = ">=3.10"` retains the existing compatibility declaration;
+`.python-version` selects the documented/tested 3.12 environment. Ruff infers its
+target from `requires-python`, removing the conflicting explicit `py312` target.
+This single CI job does not certify every declared Python version.
+`tool.uv.package = false` is appropriate for the current source-run application;
+there is no distribution build backend. Model dependencies remain required, and
+the project comment now reflects the startup failure when model loading fails.
 
 The token has only `contents: read`, checkout does not persist credentials, and
 the workflow does not consume secrets. New runs cancel older runs for the same
 PR or branch; each job has a 30-minute limit. There is no deployment job.
 
+## Free runner selection
+
+`ubuntu-24.04` (Linux x64) provides **4 vCPU, 16 GB RAM, and 14 GB SSD** for public
+repositories. It ties the largest free standard CPU/RAM tier with Windows and
+Linux ARM64, while macOS Intel offers 4 CPU/14 GB and macOS ARM64 3 CPU/7 GB.
+Linux x64 keeps the existing shell and scientific Python wheel compatibility;
+the previous PR run already verified it. Changing to Windows or ARM would not
+increase CPU/RAM. The OS label stays explicit to avoid an unrelated image upgrade.
+
+GitHub documents standard runner compute as free and unlimited for public
+repositories; larger runners are paid even for public repositories. This workflow
+uses no larger runner, paid runner group, or additional billing configuration.
+Cache storage keeps the existing repository allowance; it is not increased.
+Specifications verified on 2026-10-13:
+[runner specifications](https://docs.github.com/en/actions/reference/runners/github-hosted-runners#standard-github-hosted-runners-for-public-repositories)
+and [billing conditions](https://docs.github.com/en/billing/concepts/product-billing/github-actions).
+
+## Local validation
+
 Run equivalent checks locally from the repository root:
 
 ```sh
 uv python install
-uvx ruff@0.14.10 format --check .
-uvx ruff@0.14.10 check .
 uv sync --locked
+uv run --no-sync ruff format --check .
+uv run --no-sync ruff check .
 uv run --no-sync python -m unittest discover -s tests -v
 node --check web/app.js
 ```

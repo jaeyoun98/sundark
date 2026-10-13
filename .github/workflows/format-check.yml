@@ -18,19 +18,19 @@ concurrency:
 jobs:
   format:
     name: Check code formatting
+    # Public repo: largest standard free tier (4 vCPU, 16 GB RAM, 14 GB SSD).
     runs-on: ubuntu-24.04
     timeout-minutes: 30
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        uses: actions/checkout@v7
         with:
           persist-credentials: false
 
       - name: Set up uv
-        uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        uses: astral-sh/setup-uv@v10
         with:
-          version: '0.10.0'
           enable-cache: true
           prune-cache: true
           cache-dependency-glob: |
@@ -39,24 +39,24 @@ jobs:
             uv.lock
             .github/workflows/format-check.yml
 
-      - name: Install pinned Python
+      - name: Install project Python
         run: uv python install
 
       # The unittest suite invokes Node; explicitly install it so JS checks cannot skip.
       - name: Set up Node
-        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        uses: actions/setup-node@v7
         with:
           node-version: '24'
           package-manager-cache: false
 
-      - name: Check formatting and imports
-        run: |
-          uvx ruff@0.14.10 format --check .
-          uvx ruff@0.14.10 check .
-
       # --locked also rejects stale metadata; --frozen alone would not check it.
       - name: Install locked project dependencies
         run: uv sync --locked
+
+      - name: Check formatting and imports
+        run: |
+          uv run --no-sync ruff format --check .
+          uv run --no-sync ruff check .
 
       - name: Python and JavaScript regression tests
         run: uv run --no-sync python -m unittest discover -s tests -v
