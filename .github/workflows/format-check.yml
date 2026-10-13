@@ -1,41 +1,65 @@
-# Ruff Format Check
-# 코드 포맷팅 자동 확인 워크플로우
-
+# Keep the existing workflow and check names for repository status-check consumers.
 name: Format Check
 
 on:
   pull_request:
-    branches:
-      - main
-      - develop
+    branches: [main, develop]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 jobs:
   format:
     name: Check code formatting
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v3
-
-      - name: Set up Python
-        uses: actions/setup-python@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          python-version: '3.12'
+          persist-credentials: false
 
-      - name: Install Ruff
-        run: pip install ruff
+      - name: Set up uv
+        uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        with:
+          version: '0.10.0'
+          enable-cache: true
+          prune-cache: true
+          cache-dependency-glob: |
+            .python-version
+            pyproject.toml
+            uv.lock
+            .github/workflows/format-check.yml
 
-      - name: Check formatting
-        run: ruff format --check . && ruff check .
+      - name: Install pinned Python
+        run: uv python install
 
-      - name: Install project dependencies
+      # The unittest suite invokes Node; explicitly install it so JS checks cannot skip.
+      - name: Set up Node
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '24'
+          package-manager-cache: false
+
+      - name: Check formatting and imports
         run: |
-          pip install uv
-          uv sync --frozen
+          uvx ruff@0.14.10 format --check .
+          uvx ruff@0.14.10 check .
 
-      - name: Unit tests
-        run: uv run python -m unittest discover -s tests -v
+      # --locked also rejects stale metadata; --frozen alone would not check it.
+      - name: Install locked project dependencies
+        run: uv sync --locked
 
-      - name: Check browser JavaScript
+      - name: Python and JavaScript regression tests
+        run: uv run --no-sync python -m unittest discover -s tests -v
+
+      - name: Check browser JavaScript syntax
         run: node --check web/app.js

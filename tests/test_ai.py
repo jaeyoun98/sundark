@@ -15,7 +15,6 @@ def settings_for(backend="hermes", concurrency=8):
 
 
 def _settings_for(settings, backend, concurrency):
-
     s = settings.load()
     s["backend"] = backend
     s["concurrency"][backend] = concurrency
