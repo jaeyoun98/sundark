@@ -11,7 +11,7 @@ from pathlib import Path
 
 from .store import DATA
 
-BACKEND_NAMES = ("claude", "hermes")
+BACKEND_NAMES = ("claude", "hermes", "chatgpt")
 TASKS = (
     "translate",
     "summary",
@@ -30,6 +30,7 @@ MAX_CONCURRENCY = 16
 _FAST = ("translate", "equation", "brief")
 DEFAULT_MODELS = {
     "claude": {t: "sonnet" for t in TASKS},
+    "chatgpt": {t: ("gpt-6-luna" if t in _FAST else "gpt-6.1-sol") for t in TASKS},
     "hermes": {t: ("gpt-6-luna" if t in _FAST else "gpt-6.1-sol") for t in TASKS},
 }
 _MODEL_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:/@-]{0,119}")

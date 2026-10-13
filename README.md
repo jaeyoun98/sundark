@@ -5,16 +5,17 @@ A personal, local web app for reading conference/journal papers with AI help:
 **library** that reads PDFs straight from a folder, and **AI settings** to pick the AI tool and models.
 
 It runs on a subscription you already have: AI requests go through the AI Backend you choose,
-**Claude Code** or **Hermes**, using that tool's own login. There is **no API key and no
+**Claude Code**, **Hermes**, or **ChatGPT**, using subscription login. There is **no API key and no
 per-token bill**.
 Inspired by sites like themoonlight.io, but kept simple and private.
 
-> Personal/local use only. No auth. Subscription usage limits apply. Only `app/backends/`
+> Personal/local use only. No reader access control. Subscription usage limits apply. Only `app/backends/`
 > starts AI processes; serving other people would need a billable API backend there.
 
 ## Requirements (macOS)
 
-1. **Claude Code** or **Hermes**, installed and logged in. Claude Code:
+1. **ChatGPT** with eligible plan access, or **Claude Code** / **Hermes** installed and logged in.
+   ChatGPT needs no CLI: connect it in AI settings after starting Sundark. Claude Code:
    ```bash
    # if you don't have it yet:
    curl -fsSL https://claude.ai/install.sh | bash      # or: npm i -g @anthropic-ai/claude-code
@@ -113,10 +114,10 @@ exact file.
 
 ## AI settings
 
-Click the **AI** badge in the top bar to choose the AI Backend (Claude Code or Hermes), a model
+Click the **AI** badge in the top bar to choose the AI Backend (Claude Code, Hermes, or ChatGPT), a model
 for each task, and how many translation requests run at once (default 8). Saving sends one short
 test request per model and refuses models your account cannot use. Settings are stored in
-`data/settings.json`. `SUNDARK_BACKEND=claude|hermes` overrides the saved choice for one run (the name from
+`data/settings.json`. `SUNDARK_BACKEND=claude|hermes|chatgpt` overrides the saved choice for one run (the name from
 before the rename, `PAPER_READER_BACKEND`, still works).
 
 On first launch, if only one of the tools is installed, Sundark picks it after a successful
@@ -130,7 +131,7 @@ app/
   main.py        FastAPI routes + static serving + library/open/pdf endpoints
   ai.py          every prompt; picks the model for each task from settings
   settings.py    AI Backend, model per task, concurrency (data/settings.json)
-  backends/      one module per AI Backend (claude.py, hermes.py); only place AI runs
+  backends/      one module per AI Backend (claude.py, hermes.py, chatgpt.py); only place AI runs
   pdf_utils.py   PyMuPDF text extraction
   store.py       local PDF + result cache
 web/             static reader UI (pdf.js + marked, no build step)
@@ -144,3 +145,26 @@ data/            runtime cache (gitignored)
   `DEFAULT_MODELS` in `app/settings.py`.
 - Default translation language: the `<select>` in `web/index.html`.
 - Papers folder: `PAPERS_DIR` env var (default `./papers`).
+
+### Continue with ChatGPT
+
+Open Sundark at `http://127.0.0.1:8743`, choose **ChatGPT** in AI settings,
+and click **Continue with ChatGPT**. The browser registers Sundark with OpenAI
+and asks permission to use your eligible ChatGPT plan. Return to Sundark, refresh
+account status, choose the account's available models, and save settings. Saving
+checks each selected model with a small real request that uses your plan.
+
+Credentials remain on the local server in `~/.config/sundark/chatgpt.json`,
+written atomically with owner-only permissions on POSIX. On Windows, files
+inherit the chosen directory's ACL; keep that directory restricted to your
+Windows account. `SUNDARK_CHATGPT_CREDENTIALS`
+changes that location. Do not commit or share this file. Sundark keeps its own
+registration and does not read Codex credentials or require an API key.
+You can add accounts, select a saved account, and sign out in AI settings.
+If remote revocation fails, local credentials are still removed; remove the
+Sundark registration in ChatGPT's connected-app settings as well.
+
+This backend uses the official public Responses API with ChatGPT OAuth, inline
+images, no agent tools, `store:false`, and streamed responses. Account sign-in
+and a model list alone do not prove plan access; a completed AI request does.
+See [OpenAI's sign-in guide](https://developers.openai.com/siwc/token-sharing-open-source/sign-in).

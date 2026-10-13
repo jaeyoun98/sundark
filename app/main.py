@@ -11,17 +11,24 @@ import datetime
 import hashlib
 import io
 import json
+import logging
 import os
 import re
 import zipfile
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request, UploadFile
-from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from fastapi.responses import (
+    FileResponse,
+    HTMLResponse,
+    JSONResponse,
+    StreamingResponse,
+)
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, StrictBool
 
 from . import ai, backends, biblio, layout_model, paper_id, pdf_utils, settings, store
+from .backends import chatgpt_auth
 from .errors import AIError, RateLimitError
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -30,6 +37,25 @@ WEB = ROOT / "web"
 # Folder the app scans for papers. Drop PDFs here (or set PAPERS_DIR to another path).
 PAPERS_DIR = Path(os.environ.get("PAPERS_DIR", ROOT / "papers")).resolve()
 PAPERS_DIR.mkdir(parents=True, exist_ok=True)
+
+
+class _ChatGPTCallbackLogFilter(logging.Filter):
+    """Uvicorn logs the query string after the response; redact OAuth callbacks."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if isinstance(record.args, tuple) and len(record.args) == 5:
+            args = list(record.args)
+            if (
+                isinstance(args[2], str)
+                and args[2].split("?", 1)[0] == "/api/chatgpt/callback"
+            ):
+                args[2] = "/api/chatgpt/callback"
+                record.args = tuple(args)
+        return True
+
+
+logging.getLogger("uvicorn.access").addFilter(_ChatGPTCallbackLogFilter())
+
 
 app = FastAPI(title="Sundark")
 
@@ -744,6 +770,12 @@ async def translate_stream(req: TranslateReq):
                 await chunks.aclose()
         except AIError as exc:
             limited = isinstance(exc, RateLimitError)
+            logging.getLogger(__name__).warning(
+                "Translation batch failed: page=%s kind=%s reason=%s",
+                req.page + 1,
+                type(exc).__name__,
+                str(exc),
+            )
             yield (
                 json.dumps(
                     {"error": str(exc), "rate_limited": limited}, ensure_ascii=False
@@ -856,6 +888,12 @@ async def _backend_rows() -> list[dict]:
     rows = []
     for name, mod in backends.BACKENDS.items():
         provider = None
+        ready = mod.installed()
+        if name == "chatgpt":
+            try:
+                ready = chatgpt_auth.status()["ready"]
+            except AIError:
+                ready = False
         if mod.installed():
             try:
                 # describe() may start a subprocess (Hermes); keep it off the event loop.
@@ -869,15 +907,19 @@ async def _backend_rows() -> list[dict]:
                 "installed": mod.installed(),
                 "provider": provider,
                 "suggestions": mod.MODEL_SUGGESTIONS,
+                "ready": ready,
             }
         )
     return rows
 
 
 async def _first_run_backend(rows: list[dict]) -> tuple[str | None, str | None]:
-    installed = [r["id"] for r in rows if r["installed"]]
+    installed = [r["id"] for r in rows if r.get("ready", r["installed"])]
     if not installed:
-        return None, "Install Claude Code or Hermes, sign in, then reload this page."
+        return (
+            None,
+            "Connect ChatGPT in Settings, or install Claude Code or Hermes and sign in.",
+        )
     if len(installed) > 1:
         return None, "Choose an AI Backend in Settings."
     name = installed[0]
@@ -904,6 +946,7 @@ async def config():
         "backends": rows,
         "tasks": list(settings.TASKS),
         "models": s["models"],
+        "default_models": settings.DEFAULT_MODELS,
         "concurrency": s["concurrency"],
     }
 
@@ -933,6 +976,83 @@ async def save_settings(req: SettingsReq):
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
     return {"ok": True}
+
+
+# ChatGPT credentials stay server-side; mutations accept only this local UI.
+def _chatgpt_host(request: Request) -> None:
+    if request.url.hostname != "127.0.0.1":
+        raise HTTPException(400, "Open Sundark at http://127.0.0.1 to connect ChatGPT")
+
+
+def _chatgpt_origin(request: Request) -> str:
+    _chatgpt_host(request)
+    origin = str(request.base_url).rstrip("/")
+    if request.headers.get("origin") != origin:
+        raise HTTPException(403, "ChatGPT account actions must start from Sundark")
+    return origin
+
+
+class ChatGPTAccountReq(BaseModel):
+    account_id: str | None = None
+    new_account: StrictBool = False
+
+
+@app.get("/api/chatgpt/status")
+async def chatgpt_status(request: Request):
+    _chatgpt_host(request)
+    return chatgpt_auth.status()
+
+
+@app.get("/api/chatgpt/models")
+async def chatgpt_models(request: Request):
+    _chatgpt_host(request)
+    return {"models": await chatgpt_auth.models()}
+
+
+@app.post("/api/chatgpt/login")
+async def chatgpt_login(request: Request, req: ChatGPTAccountReq):
+    origin = _chatgpt_origin(request)
+    return await chatgpt_auth.begin(
+        origin + "/api/chatgpt/callback", req.account_id, new_account=req.new_account
+    )
+
+
+@app.get("/api/chatgpt/callback")
+async def chatgpt_callback(request: Request):
+    params = request.query_params
+    try:
+        await chatgpt_auth.complete(
+            params.get("code"),
+            params.get("state"),
+            params.get("client_id"),
+            error=params.get("error"),
+        )
+        message = "ChatGPT connected. Return to Sundark and refresh the account status."
+    except AIError:
+        message = "ChatGPT connection failed. Return to Sundark and try again."
+    return HTMLResponse(
+        "<!doctype html><html lang='en'><meta charset='utf-8'>"
+        "<meta name='viewport' content='width=device-width'>"
+        "<title>ChatGPT connection</title><p role='status'>" + message + "</p></html>",
+        headers={
+            "Cache-Control": "no-store",
+            "Referrer-Policy": "no-referrer",
+            "Content-Security-Policy": "default-src 'none'; frame-ancestors 'none'",
+        },
+    )
+
+
+@app.post("/api/chatgpt/select")
+async def chatgpt_select(request: Request, req: ChatGPTAccountReq):
+    _chatgpt_origin(request)
+    await chatgpt_auth.select(req.account_id)
+    return chatgpt_auth.status()
+
+
+@app.post("/api/chatgpt/logout")
+async def chatgpt_logout(request: Request, req: ChatGPTAccountReq):
+    _chatgpt_origin(request)
+    return await chatgpt_auth.logout(req.account_id)
 
 
 # --- static UI (mounted last so /api/* wins) ---

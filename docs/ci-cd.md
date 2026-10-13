@@ -16,8 +16,8 @@ Python selection, and workflow. The pnpm store is cached by `pnpm-lock.yaml`.
 
 Versions are selected at the level needed for compatibility: Python 3.12 and
 Node 24 accept patch updates; pnpm and Actions use major tags; uv has no exact version pin.
-Ruff and TestClient's httpx are declared as development dependencies with lower
-bounds in `pyproject.toml`. Their resolved versions live in the same lockfile as
+Ruff is a development dependency; httpx is a runtime dependency also used by
+TestClient. Both have lower bounds in `pyproject.toml`. Their resolved versions live in the same lockfile as
 runtime dependencies, so local and CI checks agree without duplicating exact
 pins in the workflow. Refresh deliberately with `uv lock --upgrade-package ruff`
 (or the dependency being updated), and commit the lockfile. Runtime package
@@ -26,14 +26,24 @@ versions are preserved by this CI change.
 `requires-python = ">=3.10"` retains the existing compatibility declaration;
 `.python-version` selects the documented/tested 3.12 environment. Ruff infers its
 target from `requires-python`, removing the conflicting explicit `py312` target.
-This single CI job does not certify every declared Python version.
+These CI jobs do not certify every declared Python version.
 `tool.uv.package = false` is appropriate for the current source-run application;
 there is no distribution build backend. Model dependencies remain required, and
 the project comment now reflects the startup failure when model loading fails.
 
 The token has only `contents: read`, checkout does not persist credentials, and
 the workflow does not consume secrets. New runs cancel older runs for the same
-PR or branch; each job has a 30-minute limit. There is no deployment job.
+PR or branch. The Ubuntu job has a 30-minute limit; the Windows auth job has a
+10-minute limit. There is no deployment job.
+
+## Windows credential regression checks
+
+A separate `windows-latest` job installs Python 3.12 and only `requirements.txt`.
+It runs the ChatGPT transport, OAuth, account, and cross-process credential tests
+with mocked providers and temporary stores. This checks native Windows imports,
+atomic writes, cancellation handling, and file locking without downloading the
+layout model. It does not certify real account authorization, browser behavior,
+or customized Windows ACL policies.
 
 ## Free runner selection
 

@@ -242,3 +242,7 @@ button { font: inherit; }
 .settings input, .settings select { min-width: 220px; }
 .settings-error { color: #f88; }
 .settings-reason { color: var(--accent); }
+
+.chatgpt-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+#chatgpt-settings { margin: 12px 0; }
+#chatgpt-link-row a { color: var(--accent); }

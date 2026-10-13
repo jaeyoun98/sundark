@@ -8,7 +8,7 @@ project working. Keep changes surgical and in the existing style.
 A personal, local web app that reads conference/journal PDFs and provides
 whole-document translation, a grounded "Research Anatomy", an auto summary, and
 paper-aware Q&A chat. It runs through the user's own subscription in the chosen AI
-Backend (Claude Code or Hermes) — never a billable API key.
+Backend (Claude Code, Hermes, or ChatGPT) — never a billable API key.
 
 ## Architecture and boundaries
 
@@ -53,7 +53,7 @@ Backend (Claude Code or Hermes) — never a billable API key.
 ## Security (do not weaken)
 
 - Never hardcode an API key, token, or password anywhere — including tests and
-  comments. This app needs no API key; it uses the subscription CLI.
+  comments. This app needs no API key; it uses subscription CLI or ChatGPT OAuth access.
 - PDF text is **untrusted input**. It is framed as data in prompts and the CLI is
   run with tools disabled (`--allowed-tools ""`). Keep both. Pass text on stdin,
   never interpolated into a shell command.
@@ -74,8 +74,8 @@ uv sync
 uv run uvicorn app.main:app --host 127.0.0.1 --port 8743
 ```
 
-Requires Claude Code (`claude`, signed in) or Hermes (`hermes setup`). Pick one in the
-**AI** badge; `SUNDARK_BACKEND=claude|hermes` overrides it for one run.
+Requires Claude Code (`claude`, signed in), Hermes (`hermes setup`), or ChatGPT login. Pick one in the
+**AI** badge; `SUNDARK_BACKEND=claude|hermes|chatgpt` overrides it for one run.
 
 ## AI Backends
 
@@ -128,7 +128,8 @@ Requires Claude Code (`claude`, signed in) or Hermes (`hermes setup`). Pick one 
 - **Each Task has its own model** (`DEFAULT_MODELS` in `app/settings.py`). Claude Code uses
   `sonnet` for every task (it follows the per-segment translation contract far more reliably
   than haiku). Hermes uses `gpt-6-luna` for translation, equations, and the glossary, and
-  `gpt-6.1-sol` for the rest. NOTE: the bare `haiku` alias in the Claude CLI still resolves to
+  `gpt-6.1-sol` for the rest. ChatGPT uses the same task defaults, with account-specific
+  choices fetched after login. NOTE: the bare `haiku` alias in the Claude CLI still resolves to
   Haiku 4.5, so if you ever set a Haiku model use the explicit `claude-haiku-5-5` id.
 - **A per-paper translation glossary ("brief") is injected into every page.**
   `translate_brief()` reads just the front matter (`brief_source()`: title +

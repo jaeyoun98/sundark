@@ -85,3 +85,26 @@ jobs:
 
       - name: Check browser JavaScript syntax
         run: node --check web/app.js
+
+  windows-auth:
+    name: Check Windows ChatGPT credentials
+    runs-on: windows-latest
+    timeout-minutes: 10
+    env:
+      PYTHONUTF8: '1'
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v7
+      - name: Install requirements-only environment
+        run: |
+          uv venv --python 3.12
+          uv pip install --python .venv/Scripts/python.exe -r requirements.txt
+      - name: Check native Windows auth and process locking
+        run: >-
+          .venv/Scripts/python.exe -m unittest
+          tests.test_backend_chatgpt tests.test_chatgpt_auth
+          tests.test_chatgpt_accounts tests.test_chatgpt_concurrency -v

@@ -18,7 +18,13 @@ class ApiTests(unittest.TestCase):
         self.dir = tempfile.TemporaryDirectory()
         root = Path(self.dir.name)
         self.patches = [
-            patch.dict(os.environ, {"SUNDARK_SETTINGS": str(root / "settings.json")}),
+            patch.dict(
+                os.environ,
+                {
+                    "SUNDARK_SETTINGS": str(root / "settings.json"),
+                    "SUNDARK_CHATGPT_CREDENTIALS": str(root / "chatgpt.json"),
+                },
+            ),
             patch.object(store, "CACHE", root / "cache"),
             patch.object(store, "CHATS", root / "chats"),
             patch("app.main._require_doc", return_value=DOC),
@@ -46,7 +52,17 @@ class ApiTests(unittest.TestCase):
             body = self.client.get("/api/config").json()
         self.assertIsNone(body["backend"])
         self.assertIn("install", body["reason"].lower())
-        self.assertEqual({b["id"] for b in body["backends"]}, {"claude", "hermes"})
+        self.assertEqual(
+            {b["id"] for b in body["backends"]}, {"claude", "hermes", "chatgpt"}
+        )
+
+    def test_corrupt_chatgpt_storage_does_not_block_other_backends(self):
+        Path(os.environ["SUNDARK_CHATGPT_CREDENTIALS"]).write_text("invalid")
+        response = self.client.get("/api/config")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["backend"], "hermes")
+        row = next(row for row in response.json()["backends"] if row["id"] == "chatgpt")
+        self.assertFalse(row["ready"])
 
     def test_config_picks_the_only_installed_backend_after_a_probe(self):
         settings.settings_path().unlink()

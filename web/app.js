@@ -43,7 +43,182 @@ async function loadConfig() {
   if (!backend) openSettings();
 }
 
+const chatGPT = {
+  busy: false, status: null, generation: 0, initialModels: false,
+  focusReturn: null, pendingAccountId: null,
+};
+
+function setChatGPTBusy(busy) {
+  const controls = ["chatgpt-account", "chatgpt-login", "chatgpt-reconnect", "chatgpt-refresh", "chatgpt-logout"];
+  if (busy) {
+    const active = document.activeElement;
+    chatGPT.focusReturn = controls.map((id) => $(id)).includes(active) ? active : null;
+  }
+  chatGPT.busy = busy;
+  for (const id of controls) {
+    $(id).disabled = busy;
+  }
+  $("chatgpt-settings").setAttribute("aria-busy", String(busy));
+  if (!busy) {
+    const target = chatGPT.focusReturn;
+    chatGPT.focusReturn = null;
+    if (target && document.activeElement === document.body && document.hasFocus()
+        && target.isConnected && !target.disabled && !target.classList.contains("hidden")) target.focus();
+  }
+}
+
+function chatGPTError(err) {
+  $("chatgpt-error").textContent = err.message;
+  show($("chatgpt-error"));
+}
+
+function clearChatGPTLink() {
+  hide($("chatgpt-link-row"));
+  $("chatgpt-link").removeAttribute("href");
+}
+
+function renderChatGPTStatus(status) {
+  chatGPT.status = status;
+  if (status.ready) clearChatGPTLink();
+  $("chatgpt-status").textContent = status.ready
+    ? "Connected to ChatGPT" + (status.email ? ": " + status.email : "")
+    : status.connected ? "Sign in again to finish connecting your ChatGPT subscription."
+    : "Sign in with your ChatGPT subscription to connect.";
+  const accounts = status.accounts || [];
+  const select = $("chatgpt-account");
+  select.innerHTML = "";
+  for (const account of accounts) {
+    const option = document.createElement("option");
+    option.value = account.account_id; option.textContent = account.label || account.email || "ChatGPT account";
+    select.appendChild(option);
+  }
+  const pendingAccount = accounts.find((account) =>
+    account.account_id === chatGPT.pendingAccountId && account.provisional);
+  if (pendingAccount) select.value = pendingAccount.account_id;
+  else {
+    chatGPT.pendingAccountId = null;
+    if (status.account_id || status.active) select.value = status.account_id || status.active;
+  }
+  (accounts.length > 1 ? show : hide)($("chatgpt-account-label"));
+  (select.value ? show : hide)($("chatgpt-reconnect"));
+  (status.connected ? show : hide)($("chatgpt-logout"));
+  $("chatgpt-login").textContent = status.connected ? "Add new ChatGPT account" : "Continue with ChatGPT";
+}
+
+async function getChatGPTJSON(path) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 30000);
+  try {
+    const response = await fetch(path, { cache: "no-store", signal: controller.signal });
+    if (!response.ok) throw new Error("Could not load the ChatGPT connection. Refresh to try again.");
+    return await response.json();
+  } finally { clearTimeout(timeout); }
+}
+
+async function refreshChatGPT() {
+  if (chatGPT.busy || $("set-backend").value !== "chatgpt" || !$("settings").open) return;
+  setChatGPTBusy(true);
+  const generation = chatGPT.generation;
+  hide($("chatgpt-error"));
+  try {
+    const status = await getChatGPTJSON("/api/chatgpt/status");
+    if (generation !== chatGPT.generation) return;
+    renderChatGPTStatus(status);
+    if (status.ready) {
+      const data = await getChatGPTJSON("/api/chatgpt/models");
+      if (generation !== chatGPT.generation) return;
+      const models = data.models || [];
+      const list = $("suggest-chatgpt");
+      list.innerHTML = "";
+      for (const model of models) {
+        const option = document.createElement("option");
+        option.value = model.slug; option.label = model.display_name || model.slug; list.appendChild(option);
+      }
+      if (chatGPT.initialModels && models.length) {
+        const available = new Set(models.map((model) => model.slug));
+        const defaults = (S.aiConfig.default_models || {}).chatgpt || {};
+        for (const input of $("set-models").querySelectorAll("input[data-task]")) {
+          if (!input.dataset.edited && input.value === defaults[input.dataset.task] && !available.has(input.value)) {
+            input.value = models[0].slug;
+          }
+        }
+        chatGPT.initialModels = false;
+      }
+    }
+  } catch (err) {
+    if (generation === chatGPT.generation) chatGPTError(err);
+  } finally {
+    setChatGPTBusy(false);
+    if (generation !== chatGPT.generation) refreshChatGPT();
+  }
+}
+
+async function changeChatGPTAccount(path, accountId) {
+  if (chatGPT.busy) {
+    if (chatGPT.status) $("chatgpt-account").value = chatGPT.status.account_id || chatGPT.status.active || "";
+    return;
+  }
+  setChatGPTBusy(true);
+  clearChatGPTLink();
+  hide($("chatgpt-error"));
+  let remoteRevoked = true;
+  let failure = null;
+  try {
+    const result = await postJSON(path, { account_id: accountId });
+    remoteRevoked = result.remote_revoked !== false;
+  } catch (err) { failure = err; }
+  finally { setChatGPTBusy(false); }
+  await refreshChatGPT();
+  if (failure) chatGPTError(failure);
+  else if (path.endsWith("/logout") && !remoteRevoked) {
+    $("chatgpt-status").textContent += " Signed out locally; the remote session could not be revoked.";
+  }
+}
+
+function selectChatGPTAccount(accountId) {
+  const account = (chatGPT.status?.accounts || []).find((item) => item.account_id === accountId);
+  if (account?.provisional) {
+    chatGPT.pendingAccountId = accountId;
+    return;
+  }
+  chatGPT.pendingAccountId = null;
+  changeChatGPTAccount("/api/chatgpt/select", accountId);
+}
+
+$("chatgpt-refresh").addEventListener("click", refreshChatGPT);
+$("chatgpt-account").addEventListener("change", (e) => selectChatGPTAccount(e.target.value));
+$("chatgpt-logout").addEventListener("click", () => changeChatGPTAccount("/api/chatgpt/logout", $("chatgpt-account").value || null));
+async function loginChatGPT(accountId, newAccount = false) {
+  if (chatGPT.busy) return;
+  clearChatGPTLink();
+  const generation = chatGPT.generation;
+  const popup = window.open("about:blank", "_blank");
+  if (popup) popup.opener = null;
+  setChatGPTBusy(true); hide($("chatgpt-error"));
+  try {
+    const result = await postJSON("/api/chatgpt/login", { account_id: accountId, new_account: newAccount });
+    const url = new URL(result.auth_url || result.url);
+    if (url.protocol !== "https:") throw new Error("Could not open ChatGPT sign-in.");
+    if (generation !== chatGPT.generation) { if (popup) popup.close(); return; }
+    $("chatgpt-link").href = url.href; show($("chatgpt-link-row"));
+    if (popup) popup.location.href = url.href;
+    $("chatgpt-status").textContent = "Finish signing in in the new tab, then refresh the connection.";
+  } catch (err) { if (popup) popup.close(); chatGPTError(err); }
+  finally { setChatGPTBusy(false); }
+}
+$("chatgpt-login").addEventListener("click", () => loginChatGPT(null, chatGPT.status?.connected === true));
+$("chatgpt-reconnect").addEventListener("click", () => {
+  const accountId = $("chatgpt-account").value;
+  if (accountId) loginChatGPT(accountId);
+});
+window.addEventListener("focus", refreshChatGPT);
+
 function fillModels(backend) {
+  clearChatGPTLink();
+  chatGPT.generation++;
+  chatGPT.initialModels = backend === "chatgpt";
+  (backend === "chatgpt" ? show : hide)($("chatgpt-settings"));
+  (backend === "chatgpt" ? show : hide)($("chatgpt-save-hint"));
   const box = $("set-models");
   box.innerHTML = "";
   const row = S.aiConfig.backends.find((b) => b.id === backend);
@@ -57,6 +232,7 @@ function fillModels(backend) {
     const input = document.createElement("input");
     input.dataset.task = task; input.setAttribute("list", listId);
     input.value = S.aiConfig.models[backend][task];
+    input.addEventListener("input", () => { input.dataset.edited = "true"; });
     label.appendChild(input); box.appendChild(label);
   }
   $("set-conc").value = S.aiConfig.concurrency[backend];
@@ -78,11 +254,15 @@ function openSettings() {
   (S.aiConfig.reason ? show : hide)($("settings-reason"));
   hide($("settings-error"));
   $("settings").showModal();
+  refreshChatGPT();
 }
 
 $("ai-badge").addEventListener("click", openSettings);
-$("set-backend").addEventListener("change", (e) => fillModels(e.target.value));
+$("set-backend").addEventListener("change", (e) => { fillModels(e.target.value); refreshChatGPT(); });
 $("settings-cancel").addEventListener("click", () => $("settings").close());
+$("settings-form").addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && e.isComposing) e.preventDefault();
+});
 $("settings-form").addEventListener("submit", async (e) => {
   e.preventDefault();
   const models = {};
