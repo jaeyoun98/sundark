@@ -360,6 +360,7 @@ async function openDoc(meta) {
 
   await buildPageShells();  // MUST await: it fills S.pages (one getPage per page); translateAll's
   buildTrShells();          // producer reads S.pages[i], so it has to be fully built first.
+  showPageNum();
   // Don't wait for the whole document's layout, or even for the whole first page. Reveal as soon
   // as (a) the FIRST translated sentence is painted and (b) a few pages of layout are buffered so
   // scrolling right away stays smooth. Translation (parallel pool) and layout prewarm both keep
@@ -1516,6 +1517,24 @@ function stepZoom(dir) {
     : [...ZOOM_STEPS].reverse().find((p) => p < cur - 0.5);
   if (next) setZoom({ mode: "pct", pct: next });
 }
+
+// "3 / 16" in the PDF bar: the page at the middle of the view, of all pages. The pages are
+// stacked top to bottom, so a binary search measures only a few of them per scroll frame.
+function showPageNum() {
+  if (!S.pages.length) { $("page-num").textContent = ""; return; }
+  const view = $("pdfview"), vb = view.getBoundingClientRect();
+  const mid = vb.top + view.clientHeight / 2;
+  let lo = 0, hi = S.pages.length - 1;  // the last page whose top is above the middle
+  while (lo < hi) {
+    const m = (lo + hi + 1) >> 1;
+    if (S.pages[m].el.getBoundingClientRect().top <= mid) lo = m; else hi = m - 1;
+  }
+  $("page-num").textContent = `${lo + 1} / ${S.pages.length}`;
+}
+let pageNumFrame = 0;
+$("pdfview").addEventListener("scroll", () => {
+  if (!pageNumFrame) pageNumFrame = requestAnimationFrame(() => { pageNumFrame = 0; showPageNum(); });
+}, { passive: true });
 
 $("zoom-in").addEventListener("click", () => stepZoom(1));
 $("zoom-out").addEventListener("click", () => stepZoom(-1));

@@ -98,6 +98,8 @@ button { font: inherit; }
 .pdfbar .btn-ghost.on { color: var(--text); border-color: var(--accent); }
 .zoom-pct { min-width: 44px; text-align: center; font-size: 12.5px; color: var(--muted);
   font-variant-numeric: tabular-nums; }
+.page-num { margin-right: auto; font-size: 12.5px; color: var(--muted);
+  font-variant-numeric: tabular-nums; }
 .pdfview { flex: 1; min-height: 0; overflow: auto; background: #050506; padding: 22px 0; }
 .pdfpage { position: relative; margin: 0 auto 18px; background: #fff; border-radius: 3px;
   box-shadow: 0 4px 24px rgba(0,0,0,.5); }
