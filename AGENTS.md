@@ -207,6 +207,13 @@ Requires Claude Code (`claude`, signed in) or Hermes (`hermes setup`). Pick one 
   clipped to their word box: the fallback font draws wider than the PDF font, and a
   rotated side stamp ("arXiv ... 2026") would otherwise cover a whole column and
   steal its hover.
+- **Zoom resizes the pages in place.** `setScale()` in `web/app.js` resizes each page
+  shell and redraws it; it does NOT rebuild `S.pages`. A translation in progress paints
+  through the page objects (`P.spanByK`, `P.trBuf`), and rebuilding them (as resizing the
+  panel once did) left the rest of the translation blank. Canvases are drawn at
+  `devicePixelRatio` (Retina) up to `MAX_CANVAS_PX`, and a page more than 3000px from the
+  view gives its canvas and text layer back (`onPageFar`), so memory stays bounded at a
+  high zoom. 100% is the paper's real size (96/72 CSS px per point).
 - **End matter is not translated, but the appendix is.** `end_matter_range()`
   finds the References/Acknowledgements/Funding span (page 0 is excluded so an
   author-funding footnote never triggers it) and returns a (start, end) range that

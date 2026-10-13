@@ -11,8 +11,11 @@ const S = {
   pdf: null,
   numPages: 0,
   scale: 1.4,
-  pages: [],      // per page: {el, canvas, textEl, rendered, segs, translated, trLoading}
+  zoom: { mode: "width", pct: 100 },  // see "PDF zoom"
+  // per page: {el, w1, h1 (size in points), canvas, textEl, rendered, gen, segs, translated, trLoading}
+  pages: [],
   pageObs: null,  // IntersectionObserver for rendering/translating
+  dropObs: null,  // IntersectionObserver that frees the drawing of pages far from the view
   anatomyLoaded: false,
   anatomyModel: null,
   summaryLoaded: false,
@@ -157,7 +160,7 @@ async function openDoc(meta) {
   ov.classList.remove("hidden");
 
   $("empty").classList.add("hidden");
-  $("pdfview").classList.remove("hidden");
+  $("pdfcol").classList.remove("hidden");
   $("aipanel").classList.remove("hidden");
   $("summary").innerHTML = "";
   $("chatlog").innerHTML = "";
@@ -168,11 +171,12 @@ async function openDoc(meta) {
 
   S.pdf = await pdfjsLib.getDocument("/api/pdf/" + meta.doc_id).promise;
 
-  // compute scale from the center column width using page 1
+  // page 1 sizes the fit modes (scale 1 = 1 CSS px per PDF point)
   const first = await S.pdf.getPage(1);
   const vw = first.getViewport({ scale: 1 });
-  const avail = $("pdfview").clientWidth - 48;
-  S.scale = Math.min(2.0, Math.max(0.8, avail / vw.width));
+  S.page1 = { w: vw.width, h: vw.height };
+  S.scale = zoomScale();
+  showZoom();
 
   await buildPageShells();  // MUST await: it fills S.pages (one getPage per page); translateAll's
   buildTrShells();          // producer reads S.pages[i], so it has to be fully built first.
@@ -226,9 +230,13 @@ async function waitLayout(n) {
 
 function resetObserver() {
   if (S.pageObs) S.pageObs.disconnect();
+  if (S.dropObs) S.dropObs.disconnect();
   S.pageObs = new IntersectionObserver(onPageVisible, {
     root: $("pdfview"), rootMargin: "800px 0px", threshold: 0.01,
   });
+  // At Retina density and a high zoom one page canvas holds tens of MB, so pages this far away
+  // give their drawing back and are drawn again when they come near.
+  S.dropObs = new IntersectionObserver(onPageFar, { root: $("pdfview"), rootMargin: "3000px 0px" });
 }
 
 async function buildPageShells() {
@@ -238,19 +246,21 @@ async function buildPageShells() {
   resetObserver();
   for (let i = 0; i < S.numPages; i++) {
     const page = await S.pdf.getPage(i + 1);
-    const vp = page.getViewport({ scale: S.scale });
+    const vp = page.getViewport({ scale: 1 });  // in points; setScale() resizes the shell
     const el = document.createElement("div");
     el.className = "pdfpage";
-    el.style.width = vp.width + "px";
-    el.style.height = vp.height + "px";
+    el.style.width = vp.width * S.scale + "px";
+    el.style.height = vp.height * S.scale + "px";
     el.dataset.page = i;
     el.innerHTML = '<div class="ph">Page ' + (i + 1) + "</div>";
     const hlLayer = document.createElement("div");
     hlLayer.className = "hllayer";          // exists from the start -> highlight works pre-render
     el.appendChild(hlLayer);
     view.appendChild(el);
-    S.pages.push({ el, hllayer: hlLayer, rendered: false, layoutLoaded: false, segs: null, translated: false, trLoading: false });
+    S.pages.push({ el, hllayer: hlLayer, w1: vp.width, h1: vp.height, gen: 0, rendered: false,
+      layoutLoaded: false, segs: null, translated: false, trLoading: false });
     S.pageObs.observe(el);
+    S.dropObs.observe(el);
   }
 }
 
@@ -258,6 +268,37 @@ function onPageVisible(entries) {
   for (const e of entries) {
     if (!e.isIntersecting) continue;
     ensureRendered(+e.target.dataset.page);
+  }
+}
+
+function onPageFar(entries) {
+  for (const e of entries) {
+    if (!e.isIntersecting) stopRender(S.pages[+e.target.dataset.page], true);
+  }
+}
+
+// Stop a page's drawing: cancel a render in flight and drop the text layer (its spans are placed
+// for the old scale). The canvas stays, stretched to the page's new size, until the redraw
+// replaces it, so a zoom does not flash blank pages; `release` frees it instead.
+function stopRender(P, release) {
+  P.gen += 1;  // a render already past its last await sees this and does not land
+  if (P.renderTask) { P.renderTask.cancel(); P.renderTask = null; }
+  P.rendered = false;
+  if (P.textEl) { P.textEl.remove(); P.textEl = null; }
+  if (!P.canvas) return;
+  if (release) {
+    P.canvas.width = P.canvas.height = 0;  // free the pixels now, not at the next GC
+    P.canvas.remove(); P.canvas = null;
+  } else {
+    P.canvas.style.width = "100%"; P.canvas.style.height = "100%";
+  }
+}
+
+// Watch every page anew: observe() reports each page's current state at once, so the pages now
+// near the view are drawn and the far ones released.
+function observePages() {
+  for (const obs of [S.pageObs, S.dropObs]) {
+    for (const P of S.pages) { obs.unobserve(P.el); obs.observe(P.el); }
   }
 }
 
@@ -290,33 +331,45 @@ function ensureLayout(i) {
   return P.layoutPromise;
 }
 
+// Largest page canvas in pixels. A high zoom on a Retina display would go past it, and a bigger
+// canvas costs too much memory or is not drawn at all, so such a page is drawn at a lower density.
+const MAX_CANVAS_PX = 2 ** 24;
+
 async function ensureRendered(i) {
   const P = S.pages[i];
   if (!P || P.rendered) return;
   P.rendered = true;
+  const gen = P.gen;  // stopRender() bumps it when a zoom or the distance makes this render moot
   const page = await S.pdf.getPage(i + 1);
+  if (P.gen !== gen) return;
   const vp = page.getViewport({ scale: S.scale });
 
   // Draw at the screen's pixel density: on a Retina display (2 device pixels per CSS pixel) a
   // CSS-sized canvas is upscaled and the page looks soft. The CSS size is the backing size over
   // dpr, not vp's fractional size, so each canvas pixel lands on exactly one device pixel.
-  const dpr = window.devicePixelRatio || 1;
+  const dpr = Math.min(window.devicePixelRatio || 1, Math.sqrt(MAX_CANVAS_PX / (vp.width * vp.height)));
   const canvas = document.createElement("canvas");
   canvas.width = Math.floor(vp.width * dpr); canvas.height = Math.floor(vp.height * dpr);
   canvas.style.width = canvas.width / dpr + "px"; canvas.style.height = canvas.height / dpr + "px";
   const textEl = document.createElement("div");
   textEl.className = "textlayer";
-  const ph = P.el.querySelector(".ph");
-  if (ph) ph.remove();
-  P.el.insertBefore(canvas, P.hllayer);  // order: canvas, hllayer, textlayer
-  P.el.appendChild(textEl);
 
-  await page.render({
+  P.renderTask = page.render({
     canvasContext: canvas.getContext("2d"), viewport: vp,
     transform: dpr !== 1 ? [dpr, 0, 0, dpr, 0, 0] : null,
-  }).promise;
+  });
+  try { await P.renderTask.promise; } catch (err) { return; }  // cancelled by stopRender()
+  if (P.gen !== gen) return;
+  P.renderTask = null;
+  // Swap the drawing in; it replaces the stretched one a zoom left behind.
+  const ph = P.el.querySelector(".ph");
+  if (ph) ph.remove();
+  if (P.canvas) { P.canvas.width = P.canvas.height = 0; P.canvas.remove(); }
+  P.el.insertBefore(canvas, P.hllayer);  // order: canvas, hllayer, textlayer
+  P.canvas = canvas;
 
   await ensureLayout(i);
+  if (P.gen !== gen) return;
   const L = P.layout;
   if (L) {
     const sc = vp.width / L.width; // px per point
@@ -355,6 +408,9 @@ async function ensureRendered(i) {
       });
     }
   }
+  if (P.gen !== gen) return;
+  P.el.appendChild(textEl);
+  P.textEl = textEl;
   attachPdfHover(i, textEl);
 }
 
@@ -1212,16 +1268,92 @@ async function postForm(url, fd) {
   return res.json();
 }
 
-// ================= Resizable panels =================
-async function refitPdf() {
-  if (!S.pdf) return;
-  const first = await S.pdf.getPage(1);
-  const vw = first.getViewport({ scale: 1 });
-  const avail = $("pdfview").clientWidth - 48;
-  const ns = Math.min(2.0, Math.max(0.8, avail / vw.width));
-  if (Math.abs(ns - S.scale) < 0.03) return;
+// ================= PDF zoom =================
+// S.zoom.mode is "width" (fit the page width, the default), "page" (fit a whole page) or "pct"
+// (a fixed S.zoom.pct). The fit modes refit when the pane changes size; a percentage stays.
+// 100% is the paper's real size: pdf.js scale 1 is 1 CSS px per point, and CSS has 96 px per
+// inch against 72 points.
+const PT_PX = 96 / 72;
+const ZOOM_STEPS = [50, 67, 75, 80, 90, 100, 110, 125, 150, 175, 200, 250, 300];
+try {
+  const z = JSON.parse(localStorage.getItem("pdfZoom"));
+  if (z && ["width", "page", "pct"].includes(z.mode) && z.pct > 0) S.zoom = z;
+} catch (e) {}
+
+// The scale the zoom choice gives for the pane's current size.
+function zoomScale() {
+  const view = $("pdfview");
+  let s = S.zoom.pct / 100 * PT_PX;
+  if (S.zoom.mode !== "pct") {
+    s = (view.clientWidth - 48) / S.page1.w;  // 24 px of dark margin each side
+    // a whole page plus the gaps above and below it
+    if (S.zoom.mode === "page") s = Math.min(s, (view.clientHeight - 40) / S.page1.h);
+  }
+  const lo = ZOOM_STEPS[0] / 100 * PT_PX, hi = ZOOM_STEPS[ZOOM_STEPS.length - 1] / 100 * PT_PX;
+  return Math.min(hi, Math.max(lo, s));
+}
+
+function showZoom() {
+  $("zoom-pct").textContent = Math.round(S.scale / PT_PX * 100) + "%";
+  $("fit-width").classList.toggle("on", S.zoom.mode === "width");
+  $("fit-page").classList.toggle("on", S.zoom.mode === "page");
+}
+
+function setZoom(z) {
+  S.zoom = z;
+  try { localStorage.setItem("pdfZoom", JSON.stringify(z)); } catch (e) {}
+  if (S.pdf && S.pages.length) setScale(zoomScale());
+  showZoom();
+}
+
+// One step up or down from the current zoom, which a fit mode may have left between steps.
+function stepZoom(dir) {
+  const cur = S.scale / PT_PX * 100;
+  const next = dir > 0
+    ? ZOOM_STEPS.find((p) => p > cur + 0.5)
+    : [...ZOOM_STEPS].reverse().find((p) => p < cur - 0.5);
+  if (next) setZoom({ mode: "pct", pct: next });
+}
+
+$("zoom-in").addEventListener("click", () => stepZoom(1));
+$("zoom-out").addEventListener("click", () => stepZoom(-1));
+$("fit-width").addEventListener("click", () => setZoom({ mode: "width", pct: S.zoom.pct }));
+$("fit-page").addEventListener("click", () => setZoom({ mode: "page", pct: S.zoom.pct }));
+
+// Resize every page to scale `ns` in place and keep the point at the middle of the view where it
+// is. The pages keep their layout, sentences and translation state (rebuilding S.pages would
+// orphan a translation still in progress); only their drawing is redone, near the view first.
+function setScale(ns) {
+  if (Math.abs(ns - S.scale) < 0.001) return;
+  const view = $("pdfview"), vb = view.getBoundingClientRect();
+  const ax = vb.left + view.clientWidth / 2, ay = vb.top + view.clientHeight / 2;
+  // the page under the anchor (or the last one above it) and the anchor's place on it, in points
+  let at = 0;
+  for (let i = 1; i < S.pages.length && S.pages[i].el.getBoundingClientRect().top <= ay; i++) at = i;
+  const r0 = S.pages[at].el.getBoundingClientRect();
+  const fx = (ax - r0.left) / S.scale, fy = (ay - r0.top) / S.scale;
+  clearPdfHover();
   S.scale = ns;
-  await buildPageShells(); // re-render at new width; translations (cached) re-fill
+  for (const P of S.pages) {
+    P.el.style.width = P.w1 * ns + "px";
+    P.el.style.height = P.h1 * ns + "px";
+    P.hllayer.innerHTML = "";  // drawn for the old scale
+    stopRender(P, false);
+  }
+  const r1 = S.pages[at].el.getBoundingClientRect();
+  view.scrollLeft += r1.left + fx * ns - ax;
+  view.scrollTop += r1.top + fy * ns - ay;
+  observePages();
+}
+
+// ================= Resizable panels =================
+// The pane changed size: a fit mode refits, a fixed percentage stays.
+function refitPdf() {
+  if (!S.pdf || !S.pages.length || S.zoom.mode === "pct") return;
+  const ns = zoomScale();
+  if (Math.abs(ns - S.scale) < 0.03) return;
+  setScale(ns);
+  showZoom();
 }
 
 (function initResizers() {

@@ -59,8 +59,17 @@
       <ul id="paperlist" class="paperlist"></ul>
     </aside>
 
-    <!-- Center: continuous PDF with text layer -->
-    <div id="pdfview" class="pdfview hidden"></div>
+    <!-- Center: continuous PDF with text layer, under its zoom bar -->
+    <div id="pdfcol" class="pdfcol hidden">
+      <div class="pdfbar">
+        <button id="zoom-out" class="btn-ghost" title="Zoom out">−</button>
+        <span id="zoom-pct" class="zoom-pct"></span>
+        <button id="zoom-in" class="btn-ghost" title="Zoom in">+</button>
+        <button id="fit-width" class="btn-ghost" title="Fit the page width to the pane">폭 맞춤</button>
+        <button id="fit-page" class="btn-ghost" title="Fit a whole page in the pane">쪽 맞춤</button>
+      </div>
+      <div id="pdfview" class="pdfview"></div>
+    </div>
 
     <!-- Right: AI panel -->
     <aside id="aipanel" class="aipanel hidden">
