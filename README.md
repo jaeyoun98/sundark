@@ -102,6 +102,16 @@ You can still **Upload PDF** from the top bar for one-off files.
 Results are cached per paper **and per AI Backend and model** under `data/`, so reopening is instant
 and doesn't re-spend usage. Text-based PDFs only (scanned images need OCR — not yet).
 
+### Zotero
+
+Switch the library to **Zotero** to browse your Zotero library: pick a collection, search by
+title, author, or year, and click an item to open its PDF. PDFs are read where Zotero stores
+them (nothing is copied), and Zotero's DOI identifies the paper, so chat history is shared with
+any other copy of the same paper. Zotero must be running with
+**Settings › Advanced › Allow other applications on this computer to communicate with Zotero**
+enabled. Paper Reader only reads from Zotero; items without a PDF are greyed out, and extra PDFs
+(e.g. supplementary material) are listed under their item.
+
 ### Paper identity and titles
 
 When you open a PDF, Paper Reader looks for its DOI or arXiv ID on the first two pages and

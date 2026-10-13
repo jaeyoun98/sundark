@@ -41,3 +41,6 @@ class FrontendTests(unittest.TestCase):
 
     def test_unrenderable_math_is_not_swapped_in(self):
         self.node("tests/frontend_math_guard.test.js")
+
+    def test_zotero_collections_are_listed_as_a_tree(self):
+        self.node("tests/frontend_zotero.test.js")

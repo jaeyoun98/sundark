@@ -96,7 +96,118 @@ $("settings-form").addEventListener("submit", async (e) => {
 });
 
 // ================= Library =================
+// Two sources: the papers folder, or the user's Zotero library (read-only, via Zotero's local API).
+let libSource = "folder";
+try { libSource = localStorage.getItem("libSource") || "folder"; } catch {}
+
+function setLibSource(src) {
+  libSource = src;
+  try { localStorage.setItem("libSource", src); } catch {}
+  $("src-folder").classList.toggle("active", src === "folder");
+  $("src-zotero").classList.toggle("active", src === "zotero");
+  $("zot-controls").classList.toggle("hidden", src !== "zotero");
+  loadLibrary();
+}
+$("src-folder").addEventListener("click", () => setLibSource("folder"));
+$("src-zotero").addEventListener("click", () => setLibSource("zotero"));
+
+async function getJSON(url) {
+  const res = await fetch(url);
+  if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail || res.statusText);
+  return res.json();
+}
+
+// Flat Zotero collections (each with a parent key) -> picker options in tree order, indented.
+function zoteroCollectionOptions(cols) {
+  const keys = new Set(cols.map((c) => c.key));
+  const kids = new Map();
+  for (const c of cols) {
+    const parent = c.parent && keys.has(c.parent) ? c.parent : null;
+    if (!kids.has(parent)) kids.set(parent, []);
+    kids.get(parent).push(c);
+  }
+  const out = [];
+  const walk = (parent, depth) => {
+    const list = (kids.get(parent) || []).slice().sort((a, b) => a.name.localeCompare(b.name));
+    for (const c of list) {
+      out.push({ key: c.key, label: "\u00a0\u00a0".repeat(depth) + c.name + " (" + c.count + ")" });
+      walk(c.key, depth + 1);
+    }
+  };
+  walk(null, 0);
+  return out;
+}
+
+let zotCollectionsLoaded = false;
+async function loadZotero(start = 0) {
+  const list = $("paperlist");
+  if (start === 0) list.innerHTML = '<li class="emptylib">Loading Zotero…</li>';
+  $("libdir").textContent = "Zotero · My Library";
+  try {
+    if (!zotCollectionsLoaded) {
+      const sel = $("zot-coll");
+      sel.innerHTML = '<option value="">All items</option>';
+      for (const o of zoteroCollectionOptions((await getJSON("/api/zotero/collections")).collections)) {
+        const opt = document.createElement("option");
+        opt.value = o.key; opt.textContent = o.label;
+        sel.appendChild(opt);
+      }
+      zotCollectionsLoaded = true;
+    }
+    const params = new URLSearchParams({ start: String(start) });
+    if ($("zot-coll").value) params.set("collection", $("zot-coll").value);
+    if ($("zot-q").value.trim()) params.set("q", $("zot-q").value.trim());
+    const r = await getJSON("/api/zotero/items?" + params);
+    if (start === 0) list.innerHTML = "";
+    list.querySelector("li.more")?.remove();
+    if (!r.items.length && start === 0) {
+      list.innerHTML = '<li class="emptylib">No matching Zotero items.</li>';
+      return;
+    }
+    for (const it of r.items) {
+      const who = it.authors.length > 2 ? it.authors[0] + " et al." : it.authors.join(", ");
+      const li = document.createElement("li");
+      li.innerHTML = `${esc(it.title)}<span class="meta">${esc([who, it.year].filter(Boolean).join(" · "))}</span>`;
+      if (!it.pdfs.length) {
+        li.classList.add("nopdf"); li.title = "No PDF attached in Zotero";
+      } else {
+        li.addEventListener("click", () => openFromZotero(it.key, it.pdfs[0].key, li));
+      }
+      list.appendChild(li);
+      for (const pdf of it.pdfs.slice(1)) {  // extra PDFs (e.g. supplementary material)
+        const sub = document.createElement("li");
+        sub.className = "sub"; sub.textContent = "↳ " + pdf.name;
+        sub.addEventListener("click", () => openFromZotero(it.key, pdf.key, sub));
+        list.appendChild(sub);
+      }
+    }
+    const shown = start + r.items.length;
+    if (shown < r.total) {
+      const more = document.createElement("li");
+      more.className = "more"; more.textContent = `Load more (${shown}/${r.total})`;
+      more.addEventListener("click", () => loadZotero(shown));
+      list.appendChild(more);
+    }
+  } catch (err) {
+    list.innerHTML = '<li class="emptylib">' + esc(err.message) + "</li>";
+    zotCollectionsLoaded = false;
+  }
+}
+$("zot-coll").addEventListener("change", () => loadZotero());
+let zotSearchT;
+$("zot-q").addEventListener("input", () => { clearTimeout(zotSearchT); zotSearchT = setTimeout(() => loadZotero(), 300); });
+
+async function openFromZotero(item, attachment, li) {
+  document.querySelectorAll(".paperlist li").forEach((x) => x.classList.remove("active"));
+  if (li) li.classList.add("active");
+  setTitle("Opening…");
+  try {
+    await openDoc(await postJSON("/api/zotero/open", { item, attachment }));
+  } catch (err) { setTitle("Open failed: " + err.message); }
+}
+
 async function loadLibrary() {
+  if (libSource === "zotero") return loadZotero();
   const list = $("paperlist");
   list.innerHTML = '<li class="emptylib">Loading…</li>';
   try {
@@ -117,7 +228,7 @@ async function loadLibrary() {
     list.innerHTML = '<li class="emptylib">Error: ' + err.message + "</li>";
   }
 }
-$("refresh").addEventListener("click", loadLibrary);
+$("refresh").addEventListener("click", () => { zotCollectionsLoaded = false; loadLibrary(); });
 
 async function openFromLibrary(rel, li) {
   document.querySelectorAll(".paperlist li").forEach((x) => x.classList.remove("active"));
@@ -1212,4 +1323,4 @@ let resizeT;
 window.addEventListener("resize", () => { clearTimeout(resizeT); resizeT = setTimeout(refitPdf, 300); });
 
 window.S = S; // expose for debugging
-loadConfig().finally(loadLibrary);
+loadConfig().finally(() => setLibSource(libSource));
