@@ -1,4 +1,4 @@
-"""Paper Reader — FastAPI backend.
+"""Sundark — FastAPI backend.
 
 Personal, local tool. Serves the static reader UI and a small JSON API that
 calls Claude (via the subscription CLI) for summary, translation, and Q&A.
@@ -31,7 +31,7 @@ WEB = ROOT / "web"
 PAPERS_DIR = Path(os.environ.get("PAPERS_DIR", ROOT / "papers")).resolve()
 PAPERS_DIR.mkdir(parents=True, exist_ok=True)
 
-app = FastAPI(title="Paper Reader")
+app = FastAPI(title="Sundark")
 
 
 @app.exception_handler(AIError)

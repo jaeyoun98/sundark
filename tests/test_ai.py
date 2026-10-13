@@ -10,9 +10,7 @@ def settings_for(backend="hermes", concurrency=8):
     from app import settings
 
     # Defaults only: never read the developer's real data/settings.json.
-    with patch.dict(
-        "os.environ", {"PAPER_READER_SETTINGS": "/nonexistent/settings.json"}
-    ):
+    with patch.dict("os.environ", {"SUNDARK_SETTINGS": "/nonexistent/settings.json"}):
         return _settings_for(settings, backend, concurrency)
 
 

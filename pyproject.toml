@@ -1,5 +1,5 @@
 [project]
-name = "paper-reader"
+name = "sundark"
 version = "0.1.0"
 description = "Personal local reader for conference/journal papers with AI summary, translation, side-by-side view, and Q&A, powered by the Claude Code CLI under your subscription."
 readme = "README.md"

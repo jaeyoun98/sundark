@@ -27,9 +27,7 @@ class PaperApiTests(unittest.TestCase):
         self.dir = tempfile.TemporaryDirectory()
         root = Path(self.dir.name)
         self.patches = [
-            patch.dict(
-                os.environ, {"PAPER_READER_SETTINGS": str(root / "settings.json")}
-            ),
+            patch.dict(os.environ, {"SUNDARK_SETTINGS": str(root / "settings.json")}),
             patch.object(store, "PDFS", root / "pdfs"),
             patch.object(store, "DOCS", root / "docs"),
             patch.object(store, "CACHE", root / "cache"),

@@ -75,7 +75,7 @@ uv run uvicorn app.main:app --host 127.0.0.1 --port 8743
 ```
 
 Requires Claude Code (`claude`, signed in) or Hermes (`hermes setup`). Pick one in the
-**AI** badge; `PAPER_READER_BACKEND=claude|hermes` overrides it for one run.
+**AI** badge; `SUNDARK_BACKEND=claude|hermes` overrides it for one run.
 
 ## AI Backends
 

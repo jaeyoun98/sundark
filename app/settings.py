@@ -1,4 +1,4 @@
-"""Paper Reader's AI settings: which AI Backend, a Model per Task, and concurrency.
+"""Sundark's AI settings: which AI Backend, a Model per Task, and concurrency.
 Non-secret; credentials stay with each AI Backend's own login."""
 
 from __future__ import annotations
@@ -35,10 +35,13 @@ DEFAULT_MODELS = {
 _MODEL_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:/@-]{0,119}")
 
 
+def _env(name: str) -> str | None:
+    """SUNDARK_<name>, or PAPER_READER_<name> from before the rename to Sundark."""
+    return os.environ.get(f"SUNDARK_{name}") or os.environ.get(f"PAPER_READER_{name}")
+
+
 def settings_path() -> Path:
-    return Path(
-        os.environ.get("PAPER_READER_SETTINGS", str(DATA / "settings.json"))
-    ).expanduser()
+    return Path(_env("SETTINGS") or str(DATA / "settings.json")).expanduser()
 
 
 def _read() -> dict:
@@ -52,7 +55,7 @@ def _read() -> dict:
 def load() -> dict:
     raw = _read()
     backend = raw.get("backend") if raw.get("backend") in BACKEND_NAMES else None
-    override = os.environ.get("PAPER_READER_BACKEND")
+    override = _env("BACKEND")
     if override in BACKEND_NAMES:
         backend = override
     models, concurrency = {}, {}

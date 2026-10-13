@@ -2353,39 +2353,6 @@ wheels = [
 ]
 
 [[package]]
-name = "paper-reader"
-version = "0.1.0"
-source = { virtual = "." }
-dependencies = [
-    { name = "doclayout-yolo" },
-    { name = "fastapi" },
-    { name = "huggingface-hub" },
-    { name = "pillow" },
-    { name = "pymupdf" },
-    { name = "pysbd" },
-    { name = "python-multipart" },
-    { name = "spacy" },
-    { name = "torch" },
-    { name = "torchvision" },
-    { name = "uvicorn", extra = ["standard"] },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "doclayout-yolo", specifier = ">=0.0.3" },
-    { name = "fastapi", specifier = ">=0.115" },
-    { name = "huggingface-hub", specifier = ">=0.23" },
-    { name = "pillow", specifier = ">=10.0" },
-    { name = "pymupdf", specifier = ">=1.24" },
-    { name = "pysbd", specifier = ">=0.3.4" },
-    { name = "python-multipart", specifier = ">=0.0.9" },
-    { name = "spacy", specifier = ">=3.7" },
-    { name = "torch", specifier = ">=2.0" },
-    { name = "torchvision", specifier = ">=0.15" },
-    { name = "uvicorn", extras = ["standard"], specifier = ">=0.30" },
-]
-
-[[package]]
 name = "pillow"
 version = "12.3.0"
 source = { registry = "https://pypi.org/simple" }
@@ -3495,6 +3462,39 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/df/af/8b724a4dbf7050144fccef2a1cebcca92431c4fad18b724bd78415285498/stringzilla-5.2.0-cp314-cp314t-win32.whl", hash = "sha256:ad61ea352d3df0dd86ac430217ed1e28ff353406230cbc0b77f99a6bda2d1561", size = 195150, upload-time = "2026-10-02T22:50:47.224Z" },
     { url = "https://files.pythonhosted.org/packages/c2/04/289b2fedb5956886f40be165bdc0b5ff7a27f2bea71e4b3d7b3f5b5d1376/stringzilla-5.2.0-cp314-cp314t-win_amd64.whl", hash = "sha256:8c9095093f04044a59a771029749156f888f72712967d3ff174cf64533c6c3f5", size = 770381, upload-time = "2026-10-02T22:50:49.332Z" },
     { url = "https://files.pythonhosted.org/packages/40/74/6aeeeb411890731a7bd1da5ff9f274a2f9620b9b534e18cd0a1d337ae00c/stringzilla-5.2.0-cp314-cp314t-win_arm64.whl", hash = "sha256:6e9c2180769bc996e66488f750f8dbaa73a89bd377ccdd42e07b61c3658383af", size = 601706, upload-time = "2026-10-02T22:50:51.654Z" },
+]
+
+[[package]]
+name = "sundark"
+version = "0.1.0"
+source = { virtual = "." }
+dependencies = [
+    { name = "doclayout-yolo" },
+    { name = "fastapi" },
+    { name = "huggingface-hub" },
+    { name = "pillow" },
+    { name = "pymupdf" },
+    { name = "pysbd" },
+    { name = "python-multipart" },
+    { name = "spacy" },
+    { name = "torch" },
+    { name = "torchvision" },
+    { name = "uvicorn", extra = ["standard"] },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "doclayout-yolo", specifier = ">=0.0.3" },
+    { name = "fastapi", specifier = ">=0.115" },
+    { name = "huggingface-hub", specifier = ">=0.23" },
+    { name = "pillow", specifier = ">=10.0" },
+    { name = "pymupdf", specifier = ">=1.24" },
+    { name = "pysbd", specifier = ">=0.3.4" },
+    { name = "python-multipart", specifier = ">=0.0.9" },
+    { name = "spacy", specifier = ">=3.7" },
+    { name = "torch", specifier = ">=2.0" },
+    { name = "torchvision", specifier = ">=0.15" },
+    { name = "uvicorn", extras = ["standard"], specifier = ">=0.30" },
 ]
 
 [[package]]

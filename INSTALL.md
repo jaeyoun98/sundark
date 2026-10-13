@@ -1,6 +1,6 @@
 # Install
 
-paper-reader is a local web app: whole-document PDF translation, a grounded "Research Anatomy",
+Sundark is a local web app: whole-document PDF translation, a grounded "Research Anatomy",
 an auto summary, and paper-aware chat. It runs on a subscription you already have, through
 **Claude Code** or **Hermes** — no API key.
 
@@ -55,7 +55,7 @@ python -m uvicorn app.main:app --host 127.0.0.1 --port 8743
 - **Server won't start / "layout model failed to load"** — the model couldn't load or download;
   fix the torch install (above) and that the weights can download, then restart.
 - **macOS: install fails mid-way / missing files** — don't install inside an iCloud-synced folder
-  (e.g. under Desktop); sync evicts files during install. Use a plain folder like `~/paper-reader`.
+  (e.g. under Desktop); sync evicts files during install. Use a plain folder like `~/sundark`.
 - **Python 3.14** is too new (pymupdf and torch have no wheels) — use 3.12.
 - **First layout pass is slow** — YOLO runs per page on CPU (~0.5 s/page) and is cached per paper;
   a GPU is used automatically if present.

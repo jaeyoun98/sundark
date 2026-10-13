@@ -14,7 +14,7 @@ import urllib.request
 import xml.etree.ElementTree as ET
 
 TIMEOUT_S = 6
-_UA = "paper-reader (local research paper reader)"
+_UA = "sundark (local research paper reader)"
 _ATOM = "{http://www.w3.org/2005/Atom}"
 
 

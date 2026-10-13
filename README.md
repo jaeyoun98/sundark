@@ -1,4 +1,4 @@
-# Paper Reader
+# Sundark
 
 A personal, local web app for reading conference/journal papers with AI help:
 **summary**, **translation**, a **side-by-side reader**, and **Q&A chat** — with a
@@ -26,7 +26,7 @@ Inspired by sites like themoonlight.io, but kept simple and private.
    claude -p "say hi"
    ```
    Hermes: install it from https://hermes-agent.nousresearch.com/docs/ and run `hermes setup`
-   to pick a Provider and model. Paper Reader never changes your Hermes settings.
+   to pick a Provider and model. Sundark never changes your Hermes settings.
 2. **Python 3.10+**. Either use **uv** (recommended) or plain `python3` + pip:
    ```bash
    # Option A — uv (installs Python for you if needed)
@@ -40,7 +40,7 @@ Inspired by sites like themoonlight.io, but kept simple and private.
 ## Run
 
 ```bash
-cd paper-reader
+cd sundark
 uv sync
 uv run uvicorn app.main:app --host 127.0.0.1 --port 8743
 ```
@@ -69,7 +69,7 @@ scrambled PDF text), cached per paper.
 ### Run without uv (plain python3 + pip)
 
 ```bash
-cd paper-reader
+cd sundark
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
@@ -80,7 +80,7 @@ Next time you only need `source .venv/bin/activate` before the `uvicorn` line.
 
 ## Papers folder (the library)
 
-Put your PDFs in **`paper-reader/papers/`** and they show up in the left sidebar.
+Put your PDFs in **`sundark/papers/`** and they show up in the left sidebar.
 Click one to read it; hit ⟳ to rescan after adding files.
 
 Use a different folder without moving files:
@@ -104,7 +104,7 @@ and doesn't re-spend usage. Text-based PDFs only (scanned images need OCR — no
 
 ### Paper identity and titles
 
-When you open a PDF, Paper Reader looks for its DOI or arXiv ID on the first two pages and
+When you open a PDF, Sundark looks for its DOI or arXiv ID on the first two pages and
 fetches the title, authors, and year from CrossRef or arXiv. Only that identifier is sent. If
 there is no identifier or no internet, the title read from the PDF is used, and the next online
 open fills it in. Chat history follows the paper, not the file: an annotated copy or a newer
@@ -116,9 +116,10 @@ exact file.
 Click the **AI** badge in the top bar to choose the AI Backend (Claude Code or Hermes), a model
 for each task, and how many translation requests run at once (default 8). Saving sends one short
 test request per model and refuses models your account cannot use. Settings are stored in
-`data/settings.json`. `PAPER_READER_BACKEND=claude|hermes` overrides the saved choice for one run.
+`data/settings.json`. `SUNDARK_BACKEND=claude|hermes` overrides the saved choice for one run (the name from
+before the rename, `PAPER_READER_BACKEND`, still works).
 
-On first launch, if only one of the tools is installed, Paper Reader picks it after a successful
+On first launch, if only one of the tools is installed, Sundark picks it after a successful
 test request. If both are installed, the settings dialog opens. If neither is, PDFs still open and
 AI features stay off.
 

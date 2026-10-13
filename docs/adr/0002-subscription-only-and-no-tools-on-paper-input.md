@@ -1,8 +1,8 @@
 # Subscription access only, and no tools on requests that carry paper content
 
-Paper Reader reaches models only through the user's subscription login in each AI Backend (Claude
+Sundark reaches models only through the user's subscription login in each AI Backend (Claude
 Code, Hermes), never through a paid API key: the Claude Code path strips `ANTHROPIC_API_KEY`, and
-Paper Reader never changes a Hermes Provider. Every request that carries PDF content runs with all
+Sundark never changes a Hermes Provider. Every request that carries PDF content runs with all
 agent tools disabled, because PDF text and images are untrusted and could carry prompt injection.
 This includes equation reading: the equation image is sent inline in the message (verified to work
 with tools off on both Claude Code and Hermes) instead of enabling a file-read tool to open it.

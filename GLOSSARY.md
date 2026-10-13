@@ -1,4 +1,4 @@
-# Paper Reader
+# Sundark
 
 A personal reader for research papers that sends translation, summary, analysis, and chat
 requests to an AI tool the user already subscribes to.
@@ -6,7 +6,7 @@ requests to an AI tool the user already subscribes to.
 ## AI access
 
 **AI Backend**:
-The local AI tool that Paper Reader hands every AI request to. Supported: Claude Code and
+The local AI tool that Sundark hands every AI request to. Supported: Claude Code and
 Hermes. OpenClaw is a planned future AI Backend.
 _Avoid_: Provider, engine, AI selector
 
@@ -20,7 +20,7 @@ One specific language model an AI Backend uses, such as gpt-6-luna or claude-hai
 _Avoid_: Engine, backend
 
 **Task**:
-A kind of AI request Paper Reader makes: translation, summary, anatomy, chat, explanation,
+A kind of AI request Sundark makes: translation, summary, anatomy, chat, explanation,
 equation reading, or glossary building. Each AI Backend picks a Model per Task.
 _Avoid_: Job, mode, feature
 
@@ -46,7 +46,7 @@ File Fingerprint.
 _Avoid_: Paper ID, checksum
 
 **Paper Source**:
-Where Paper Reader finds Papers: a Library Folder the user picks, or Zotero.
+Where Sundark finds Papers: a Library Folder the user picks, or Zotero.
 _Avoid_: Import, provider
 
 **Bibliographic Record**:

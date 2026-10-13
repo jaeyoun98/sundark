@@ -75,9 +75,7 @@ class ReviewEndpointTests(unittest.TestCase):
         pdf = root / "d1.pdf"
         pdf.write_bytes(b"%PDF-1.4 dummy")
         self.patches = [
-            patch.dict(
-                os.environ, {"PAPER_READER_SETTINGS": str(root / "settings.json")}
-            ),
+            patch.dict(os.environ, {"SUNDARK_SETTINGS": str(root / "settings.json")}),
             patch.object(store, "CACHE", root / "cache"),
             patch.object(store, "CHATS", root / "chats"),
             patch("app.main._require_doc", return_value=DOC),
@@ -111,6 +109,7 @@ class ReviewEndpointTests(unittest.TestCase):
         ]
         for p in self.patches:
             p.start()
+        os.environ.pop("SUNDARK_BACKEND", None)
         os.environ.pop("PAPER_READER_BACKEND", None)
         settings.save("hermes", {}, 8)
         self.client = TestClient(main.app)

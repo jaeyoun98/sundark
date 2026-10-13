@@ -13,9 +13,10 @@ class SettingsTests(unittest.TestCase):
         self.dir = tempfile.TemporaryDirectory()
         self.path = Path(self.dir.name) / "settings.json"
         self.env = patch.dict(
-            os.environ, {"PAPER_READER_SETTINGS": str(self.path)}, clear=False
+            os.environ, {"SUNDARK_SETTINGS": str(self.path)}, clear=False
         )
         self.env.start()
+        os.environ.pop("SUNDARK_BACKEND", None)
         os.environ.pop("PAPER_READER_BACKEND", None)
 
     def tearDown(self):
@@ -61,8 +62,27 @@ class SettingsTests(unittest.TestCase):
 
     def test_env_overrides_backend(self):
         settings.save("claude", {}, 8)
+        with patch.dict(os.environ, {"SUNDARK_BACKEND": "hermes"}):
+            self.assertEqual(settings.load()["backend"], "hermes")
+
+    def test_env_names_from_before_the_rename_still_work(self):
+        settings.save("claude", {}, 8)
         with patch.dict(os.environ, {"PAPER_READER_BACKEND": "hermes"}):
             self.assertEqual(settings.load()["backend"], "hermes")
+        old = Path(self.dir.name) / "old.json"
+        with patch.dict(os.environ, {"PAPER_READER_SETTINGS": str(old)}):
+            os.environ.pop("SUNDARK_SETTINGS")
+            self.assertEqual(settings.settings_path(), old)
+
+    def test_new_env_names_win_over_the_old_ones(self):
+        env = {
+            "SUNDARK_BACKEND": "claude",
+            "PAPER_READER_BACKEND": "hermes",
+            "PAPER_READER_SETTINGS": str(Path(self.dir.name) / "old.json"),
+        }
+        with patch.dict(os.environ, env):
+            self.assertEqual(settings.load()["backend"], "claude")
+            self.assertEqual(settings.settings_path(), self.path)
 
     def test_save_rejects_unknown_backend_and_bad_values(self):
         with self.assertRaises(ValueError):

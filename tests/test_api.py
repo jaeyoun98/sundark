@@ -18,15 +18,14 @@ class ApiTests(unittest.TestCase):
         self.dir = tempfile.TemporaryDirectory()
         root = Path(self.dir.name)
         self.patches = [
-            patch.dict(
-                os.environ, {"PAPER_READER_SETTINGS": str(root / "settings.json")}
-            ),
+            patch.dict(os.environ, {"SUNDARK_SETTINGS": str(root / "settings.json")}),
             patch.object(store, "CACHE", root / "cache"),
             patch.object(store, "CHATS", root / "chats"),
             patch("app.main._require_doc", return_value=DOC),
         ]
         for p in self.patches:
             p.start()
+        os.environ.pop("SUNDARK_BACKEND", None)
         os.environ.pop("PAPER_READER_BACKEND", None)
         settings.save("hermes", {}, 8)
         self.client = TestClient(
