@@ -949,6 +949,48 @@ function mdMath(text) {
   return marked.parse(shielded).replace(/@@MATH(\d+)@@/g, (_, k) => escape(spans[Number(k)]));
 }
 
+// Copy math as LaTeX in BOTH clipboard flavors. A KaTeX formula is rendered twice (hidden
+// MathML + visible glyph spans); a plain browser copy takes both, and KaTeX's copy-tex fixes only
+// text/plain, while rich-text targets (Notes, Docs, Notion, chat boxes) paste text/html, so each
+// formula came out twice, one glyph per line. Grow the selection to whole formulas and replace
+// each with its TeX source ($...$ inline, \[...\] display) in text/plain and text/html.
+function texOf(k) {
+  const ann = k.querySelector('annotation[encoding="application/x-tex"]');
+  const tex = ann ? ann.textContent.trim() : k.textContent;
+  const display = k.parentElement && k.parentElement.classList.contains("katex-display");
+  return display ? "\\[" + tex + "\\]" : "$" + tex + "$";
+}
+document.addEventListener("copy", (e) => {
+  const sel = window.getSelection();
+  if (e.defaultPrevented || !sel || sel.isCollapsed || sel.rangeCount !== 1 || !e.clipboardData) return;
+  // Leave PDF text, editable inputs, and selections across panes to the browser.
+  const paneAt = (node) => (node.nodeType === 1 ? node : node.parentElement)
+    ?.closest("#trlist, #summary, #chatlog, #anatomy");
+  const selected = sel.getRangeAt(0);
+  const pane = paneAt(selected.startContainer);
+  if (!pane || pane !== paneAt(selected.endContainer)) return;
+  if (document.activeElement?.matches("input, textarea, [contenteditable='true']")) return;
+  const range = sel.getRangeAt(0).cloneRange();
+  const formulaAt = (node) => {
+    const el = node && (node.nodeType === 1 ? node : node.parentElement);
+    return el ? el.closest(".katex") : null;
+  };
+  const head = formulaAt(range.startContainer), tail = formulaAt(range.endContainer);
+  if (head) range.setStartBefore(head.parentElement.classList.contains("katex-display") ? head.parentElement : head);
+  if (tail) range.setEndAfter(tail.parentElement.classList.contains("katex-display") ? tail.parentElement : tail);
+  const box = document.createElement("div");
+  box.appendChild(range.cloneContents());
+  const formulas = box.querySelectorAll(".katex");
+  if (!formulas.length) return;  // nothing to fix: let the browser copy as usual
+  formulas.forEach((k) => (k.closest(".katex-display") || k).replaceWith(document.createTextNode(texOf(k))));
+  const html = box.innerHTML;
+  box.querySelectorAll("br").forEach((br) => br.replaceWith("\n"));
+  box.querySelectorAll("div, p, li, h1, h2, h3, h4, h5, h6, blockquote, pre, tr").forEach((el) => el.append("\n"));
+  e.clipboardData.setData("text/plain", box.textContent.replace(/\n{3,}/g, "\n\n"));
+  e.clipboardData.setData("text/html", html);
+  e.preventDefault();
+});
+
 function renderMath(el) {
   if (!window.renderMathInElement) return;
   try {
