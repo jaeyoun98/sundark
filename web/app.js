@@ -728,15 +728,75 @@ function highlightSource(page, k, on, scroll) {
   if (on && scroll) scrollPdfToSeg(page, k, scroll === "center");
 }
 
-// Scroll the PDF so the highlighted sentence sits at the vertical center of the view.
-function scrollPdfToSeg(page, k, center) {
+// A sentence's highlight as separate blocks: one per page, and within a page one per column (or
+// per run of lines that a figure interrupts). Each block keeps its page, its extent and the
+// area-weighted sum of its line rects' centres, all in PDF points. Cached on the segment.
+function segParts(page, k) {
+  const seg = S.pages[page].segs[k];
+  if (seg.parts) return seg.parts;
+  const parts = [];
+  const split = (pg, rects) => {
+    if (!rects || !rects.length) return;
+    const hs = rects.map((r) => r.h).sort((a, b) => a - b), h = hs[hs.length >> 1];
+    let cur = null;
+    for (const r of [...rects].sort((a, b) => a.top - b.top)) {
+      // A line joins the block above it unless a gap of more than 3 lines parts them. Sorted top
+      // to bottom, a sentence that goes on in the next column jumps from that column's top to the
+      // previous one's foot. Not an x-overlap test: a sentence that starts at the end of a line
+      // has a first rect that does not overlap its second.
+      if (!cur || r.top - cur.bot > 3 * h) {
+        cur = { page: pg, left: r.left, right: r.left + r.w, top: r.top, bot: r.top + r.h, area: 0, sum: 0 };
+        parts.push(cur);
+      }
+      cur.left = Math.min(cur.left, r.left); cur.right = Math.max(cur.right, r.left + r.w);
+      cur.bot = Math.max(cur.bot, r.top + r.h);
+      const a = r.w * r.h;
+      cur.area += a; cur.sum += a * (r.top + r.h / 2);
+    }
+  };
+  split(page, seg.rects);
+  if (seg.nextPage != null) split(seg.nextPage, seg.rectsNext);
+  return (seg.parts = parts);
+}
+
+// Screen y of a block's middle.
+function partY(p) {
+  const mid = p.area > 0 ? p.sum / p.area : (p.top + p.bot) / 2;
+  return S.pages[p.page].el.getBoundingClientRect().top + mid * S.scale;
+}
+
+// Screen y of a sentence's middle: the area-weighted centre of all its blocks. Not the centre of
+// its bounding box: for a sentence that ends a column and goes on at the top of the next one,
+// that falls in the gap between the two.
+function segMidY(page, k) {
   const P = S.pages[page];
-  const seg = P && P.segs && P.segs[k];
-  if (!seg || !seg.rects.length) return;
+  if (!P || !P.segs || !P.segs[k]) return null;
+  let area = 0, sum = 0;
+  for (const p of segParts(page, k)) { area += p.area; sum += p.area * partY(p); }
+  return area > 0 ? sum / area : null;
+}
+
+// Index of the block of sentence (pg, k) nearest the pointer (x, y) on page `page`.
+function partAt(pg, k, page, x, y) {
+  const b = S.pages[page].el.getBoundingClientRect();
+  const px = (x - b.left) / S.scale, py = (y - b.top) / S.scale;  // pointer in PDF points
+  let best = -1, bestD = Infinity;
+  segParts(pg, k).forEach((p, j) => {
+    if (p.page !== page) return;
+    const dx = Math.max(p.left - px, 0, px - p.right), dy = Math.max(p.top - py, 0, py - p.bot);
+    if (dx * dx + dy * dy < bestD) { bestD = dx * dx + dy * dy; best = j; }
+  });
+  return best;
+}
+
+// Scroll the PDF so the highlighted sentence's middle sits at the vertical center of the view.
+function scrollPdfToSeg(page, k, center) {
+  const y = segMidY(page, k);
+  if (y == null) return;
   const view = $("pdfview");
-  const topInView = P.el.getBoundingClientRect().top - view.getBoundingClientRect().top + seg.rects[0].top * S.scale;
-  if (center || topInView < 60 || topInView > view.clientHeight - 60) {
-    view.scrollTo({ top: view.scrollTop + topInView - view.clientHeight * 0.5, behavior: "smooth" });
+  const yInView = y - view.getBoundingClientRect().top;
+  if (center || yInView < 60 || yInView > view.clientHeight - 60) {
+    view.scrollTo({ top: view.scrollTop + yInView - view.clientHeight * 0.5, behavior: "smooth" });
   }
 }
 
@@ -750,12 +810,19 @@ function attachPdfHover(page, textEl) {
     const k = sp ? sp._seg : undefined;
     if (k == null) return; // over a gap between words — keep current highlight (no flicker)
     const pg = sp._segPage ?? page;  // a continuation word belongs to the previous page's sentence
-    if (!pdfHoverCur || pdfHoverCur.page !== pg || pdfHoverCur.k !== k) {
+    // The translation sits beside the block under the pointer, and follows it when the pointer
+    // moves on to the sentence's other column or page.
+    const part = partAt(pg, k, page, e.clientX, e.clientY);
+    const same = pdfHoverCur && pdfHoverCur.page === pg && pdfHoverCur.k === k;
+    if (same && pdfHoverCur.part === part) return;
+    if (!same) {
       clearPdfHover();
-      pdfHoverCur = { page: pg, k };
       setHover(pg, k, true);
-      const t = $("trlist").querySelector(`.trseg[data-page="${pg}"][data-i="${k}"]`);
-      if (t && $("tab-translation").classList.contains("active")) scrollTrToSeg(pg, k, t);
+    }
+    pdfHoverCur = { page: pg, k, part };
+    const t = $("trlist").querySelector(`.trseg[data-page="${pg}"][data-i="${k}"]`);
+    if (t && $("tab-translation").classList.contains("active")) {
+      scrollTrTo(t, part >= 0 ? partY(segParts(pg, k)[part]) : segMidY(pg, k));
     }
   });
   textEl.addEventListener("mouseleave", clearPdfHover);
@@ -764,17 +831,15 @@ function clearPdfHover() {
   if (pdfHoverCur) { setHover(pdfHoverCur.page, pdfHoverCur.k, false); pdfHoverCur = null; }
 }
 
-// Scroll the translation panel so the sentence's translation starts at the same height as
-// its PDF highlight, so the eyes move straight across. Instant, not smooth: sweeping the
-// mouse over the PDF changes the target several times a second, and a smooth scroll would
-// keep restarting and trail behind the pointer.
-function scrollTrToSeg(page, k, t) {
-  const P = S.pages[page];
-  const seg = P.segs[k];
-  if (!seg.rects.length) return;
+// Scroll the translation panel so the middle of translation `t` is level with screen y `mid`
+// (the middle of the highlighted block under the pointer), so the eyes move straight across.
+// Instant, not smooth: sweeping the mouse over the PDF changes the target several times a
+// second, and a smooth scroll would keep restarting and trail behind the pointer.
+function scrollTrTo(t, mid) {
+  if (mid == null) return;
   const list = $("trlist");  // the panel's scroller (flex child of #tab-translation)
   const lb = list.getBoundingClientRect(), tb = t.getBoundingClientRect();
-  let y = P.el.getBoundingClientRect().top + seg.rects[0].top * S.scale;
+  let y = mid - tb.height / 2;  // where the translation's top goes
   // Near the panel's edges, keep the whole translation visible instead.
   y = Math.max(lb.top, Math.min(y, lb.bottom - tb.height));
   // #trlist is zoomed by trScale, so its scrollTop is in unzoomed px.
