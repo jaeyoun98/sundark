@@ -29,7 +29,7 @@ jobs:
           persist-credentials: false
 
       - name: Set up uv
-        uses: astral-sh/setup-uv@v10
+        uses: astral-sh/setup-uv@v7
         with:
           enable-cache: true
           prune-cache: true
@@ -42,12 +42,34 @@ jobs:
       - name: Install project Python
         run: uv python install
 
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v5
+        with:
+          version: '11'
+
       # The unittest suite invokes Node; explicitly install it so JS checks cannot skip.
       - name: Set up Node
         uses: actions/setup-node@v7
         with:
           node-version: '24'
-          package-manager-cache: false
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+
+      - name: Install JavaScript tooling
+        run: pnpm install --frozen-lockfile
+
+      # Advisory during adoption: avoid reformatting app.js while PR #4 changes it.
+      - name: Check JavaScript formatting (advisory)
+        id: js-format
+        continue-on-error: true
+        run: pnpm run format:check
+
+      - name: Report JavaScript formatting debt
+        if: steps.js-format.outcome == 'failure'
+        run: |
+          echo '::warning::Oxfmt found existing formatting debt; this check is advisory until the source-format migration.'
+          echo '### Oxfmt: advisory check failed' >> "$GITHUB_STEP_SUMMARY"
+          echo 'Review the formatting step log. Source reformatting is deferred to avoid conflicts with PR #4; Python, tests, and JS syntax checks remain required.' >> "$GITHUB_STEP_SUMMARY"
 
       # --locked also rejects stale metadata; --frozen alone would not check it.
       - name: Install locked project dependencies

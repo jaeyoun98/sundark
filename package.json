@@ -1,0 +1,11 @@
+{
+  "name": "sundark-tooling",
+  "private": true,
+  "scripts": {
+    "format": "oxfmt --write \"web/**/*.js\" \"tests/**/*.js\"",
+    "format:check": "oxfmt --check \"web/**/*.js\" \"tests/**/*.js\""
+  },
+  "devDependencies": {
+    "oxfmt": "^0"
+  }
+}

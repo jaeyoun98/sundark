@@ -12,3 +12,6 @@ __pycache__/
 
 # Env
 .env
+
+# JavaScript development tooling
+node_modules/

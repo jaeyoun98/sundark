@@ -8,14 +8,14 @@ and preserves its **Check code formatting** check name. It runs for PRs targetin
 filters, so a required check also runs for documentation-only PRs.
 
 The Ubuntu 24.04 job installs Python from `.python-version` (3.12), the current
-stable uv, and Node 24. `uv sync --locked` validates project metadata and installs
+stable uv, Node 24, and pnpm 11. `uv sync --locked` validates project metadata and installs
 runtime and development dependencies from `uv.lock`. It runs Ruff formatting/import
 lint, the Python unittest suite (including its Node regression scripts), and
 `web/app.js` syntax checks. uv's cache is keyed on the lockfile, project metadata,
-Python selection, and workflow.
+Python selection, and workflow. The pnpm store is cached by `pnpm-lock.yaml`.
 
 Versions are selected at the level needed for compatibility: Python 3.12 and
-Node 24 accept patch updates; Actions use major tags; uv has no exact version pin.
+Node 24 accept patch updates; pnpm and Actions use major tags; uv has no exact version pin.
 Ruff and TestClient's httpx are declared as development dependencies with lower
 bounds in `pyproject.toml`. Their resolved versions live in the same lockfile as
 runtime dependencies, so local and CI checks agree without duplicating exact
@@ -76,6 +76,31 @@ CI therefore does not certify model downloads/inference, subscription CLI login,
 or an interactive browser session. Those require separate integration checks.
 Linux installs the existing locked torch/torchvision dependencies unchanged;
 the cold install can be large. Do not switch just one of them to a CPU index.
+
+## JavaScript formatting adoption
+
+Oxfmt is the JS formatter; Ruff remains the Python formatter. Development scripts
+use the familiar `format` / `format:check` names and pnpm. `oxfmt: ^0` allows
+updates within its current major; `pnpm-lock.yaml` records the tested resolution.
+The shared style is two spaces, semicolons, LF, trailing commas, arrow parentheses,
+and 100-column wrapping. Double quotes match Sundark's existing JavaScript.
+No frontend framework, build step, or JavaScript runtime dependency is added.
+
+```sh
+pnpm install --frozen-lockfile
+pnpm run format:check
+# Writes source formatting; run only when ready for the separate migration:
+pnpm run format
+```
+
+The check covers JavaScript in `web/` and `tests/`, including future test files.
+**It is advisory during adoption**: all four existing JS files currently need
+formatting. CI emits a warning and job-summary entry when it fails, while Python
+format/lint, tests, and JavaScript syntax still block the job. Installation errors
+also block the job. A green workflow does not mean the Oxfmt check passed.
+Source files are deliberately not reformatted here because PR #4 is changing
+`web/app.js`. After that work lands, format the sources in a dedicated change and
+remove `continue-on-error` and the advisory-report step to make this gate required.
 
 ## Delivery decision
 
