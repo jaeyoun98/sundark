@@ -680,12 +680,20 @@ function makeTrSeg(i, k, tr) {
   d.addEventListener("mouseenter", () => setHover(i, k, true));
   d.addEventListener("mouseleave", () => setHover(i, k, false));
   d.addEventListener("click", () => {
-    document.querySelectorAll(".trseg.pinned").forEach((x) => x.classList.remove("pinned"));
+    // A second click on the pinned sentence releases it (so does Esc, below).
+    if (d.classList.contains("pinned")) { d.classList.remove("pinned"); return; }
+    unpinTr();
     d.classList.add("pinned");
     highlightSource(i, k, true, "center");
   });
   return d;
 }
+
+// Release the translation sentence pinned by a click.
+function unpinTr() {
+  document.querySelectorAll(".trseg.pinned").forEach((x) => x.classList.remove("pinned"));
+}
+document.addEventListener("keydown", (e) => { if (e.key === "Escape") unpinTr(); });
 
 // Unified: highlight one sentence on BOTH sides — a continuous bar over its lines on
 // the PDF, and its translation segment in the panel.
