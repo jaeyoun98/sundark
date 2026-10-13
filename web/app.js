@@ -277,6 +277,7 @@ function ensureLayout(i) {
         size: s.size,
         heading: s.heading,
         equation: !!s.equation,  // paintFrontier upgrades pages that have one
+        eqno: s.eqno || null,    // equation number "(1)" printed beside a display equation
         rects: lineRects(s.words.map((wi) => L.words[wi]), !s.equation),  // in points
         // A sentence that wraps to the next page carries that page's word boxes too, so the
         // highlight can span both pages.
@@ -605,6 +606,13 @@ function preparePage(i) {
     const sp = makeTrSeg(i, k, "");
     if (isBullet) sp.classList.add("trbullet");
     para.appendChild(sp);
+    if (seg.eqno) {
+      // Shown beside the translated equation until the image-read LaTeX takes it as \tag.
+      sp.dataset.eqno = seg.eqno;
+      const no = document.createElement("span");
+      no.className = "treqno"; no.textContent = "(" + seg.eqno + ")";
+      para.appendChild(no);
+    }
     para.appendChild(document.createTextNode(" "));
     P.spanByK[k] = sp;
   });
@@ -674,7 +682,10 @@ async function fetchMath(i, wrap) {
         try { window.katex.renderToString(eq.latex, { displayMode: true, throwOnError: true }); }
         catch { continue; }
       }
-      sp.textContent = "\\[ " + eq.latex + " \\]";
+      const tag = sp.dataset && sp.dataset.eqno ? " \\tag{" + sp.dataset.eqno + "}" : "";
+      sp.textContent = "\\[ " + eq.latex + tag + " \\]";
+      const no = sp.nextElementSibling;
+      if (tag && no && no.classList.contains("treqno")) no.remove();
     }
     renderMath(wrap);
   } catch { /* best-effort: keep the original text if math fetch fails */ }

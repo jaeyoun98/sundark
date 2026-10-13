@@ -986,6 +986,31 @@ def _line_gap(upper: dict, lower: dict) -> float:
     return statistics.median(lower["y0"]) - statistics.median(upper["y1"])
 
 
+_EQNO = re.compile(r"\(\s*(\d+(?:\.\d+)?[a-z]?)\s*\)")
+
+
+def _attach_equation_numbers(lines: list[dict]) -> list[dict]:
+    """Move each lone equation number line ('(1)', '(4a)', '(2.3)') onto the display-equation
+    line it sits level with, as that line's "eqno", and drop the number line. Alone, a number
+    is a one-token fragment that the short-fragment filter discards, so equations lost their
+    numbers. A number with no equation beside it is left as it was."""
+    out = []
+    equations = [ln for ln in lines if ln.get("math")]
+    for ln in lines:
+        m = _EQNO.fullmatch(ln["text"].strip())
+        if m and not ln.get("math"):
+            best, overlap = None, 0.0
+            for eq in equations:
+                ov = min(eq["bottom"], ln["bottom"]) - max(eq["top"], ln["top"])
+                if ov > overlap and eq["right"] <= ln["left"] + 2:
+                    best, overlap = eq, ov
+            if best is not None:
+                best["eqno"] = m.group(1)
+                continue
+        out.append(ln)
+    return out
+
+
 def _page_layout(
     pdf_bytes: bytes,
     page_index: int,
@@ -1166,6 +1191,8 @@ def _page_layout(
             merged_lines.append(ln)
         lines = merged_lines
 
+        lines = _attach_equation_numbers(lines)
+
         # Drop running headers/footers (repeated top/bottom lines across pages).
         if headers:
             lines = [
@@ -1242,6 +1269,8 @@ def _page_layout(
                         "heading": False,
                         "equation": True,
                     }
+                if ln.get("eqno"):
+                    cur["eqno"] = ln["eqno"]
                 prev, prev_ended = ln, True
                 continue
             if ln["heading"]:
@@ -1299,6 +1328,8 @@ def _page_layout(
                             "equation": True,
                         }
                     )
+                    if para.get("eqno"):
+                        sentences[-1]["eqno"] = para["eqno"]
                 continue
             text, local = _join_words(para["widx"], words)
             split = [

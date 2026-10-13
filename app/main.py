@@ -239,8 +239,9 @@ _layout_lock = asyncio.Lock()
 # "(1)") into their own sentences; rejoin fragments the segmenter broke mid-sentence (inline
 # math, a citation, a bracket or parenthesis, closing punctuation, inside a word); keep short
 # prose by paragraph context; stitch page breaks before a citation or inside a hyphenated word,
-# skipping caption sentences.)
-_LAYOUT_VERSION = 9
+# skipping caption sentences. v10: attach a lone equation number "(1)" to the display equation
+# beside it (as the sentence's "eqno") instead of dropping it as a short fragment.)
+_LAYOUT_VERSION = 10
 
 
 def _page_layout_cached(doc_id: str, page: int) -> dict:

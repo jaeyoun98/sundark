@@ -232,3 +232,4 @@ button { font: inherit; }
 .settings input, .settings select { min-width: 220px; }
 .settings-error { color: #f88; }
 .settings-reason { color: var(--accent); }
+.treqno { float: right; color: var(--muted, #888); margin-left: 8px; }
