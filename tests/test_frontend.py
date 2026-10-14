@@ -27,6 +27,9 @@ class FrontendTests(unittest.TestCase):
     def test_markdown_keeps_latex_for_katex(self):
         self.node("tests/frontend_markdown_math.test.js")
 
+    def test_pdf_wheel_zoom_keeps_pointer_and_browser_zoom_boundaries(self):
+        self.node("tests/frontend_pdf_zoom.test.js")
+
     def test_copying_math_yields_latex(self):
         # KaTeX's copy-tex makes a copied formula paste as its LaTeX source instead of the
         # hidden MathML plus one line per glyph; it must match the loaded KaTeX version.
