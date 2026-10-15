@@ -1,0 +1,37 @@
+{
+  "schema_version": 1,
+  "repository": "jmy-org/sundark",
+  "tag": "landing-media-2026-10-15-v1",
+  "assets": [
+    {
+      "file": "translation.mp4",
+      "bytes": 3077273,
+      "sha256": "b1a5e3c35b35a0d66b9351a2df26cb9333758edf1b99e597cad38304ecd1aa4c"
+    },
+    {
+      "file": "translation.jpg",
+      "bytes": 224125,
+      "sha256": "c9b313f54c28068cc93e7f5d93407a054b1d7e33f44f4c9b6e56ff3c70860fff"
+    },
+    {
+      "file": "anatomy.mp4",
+      "bytes": 2801822,
+      "sha256": "c99da00c4e0671bbf2c220a91fd3cf365921eee2e91396de16dbc1d85a561bc6"
+    },
+    {
+      "file": "anatomy.jpg",
+      "bytes": 206648,
+      "sha256": "9c2b7704367e667f9ad514c0f98e56ece693fbc6a37d78480df05225055b7982"
+    },
+    {
+      "file": "chat.mp4",
+      "bytes": 2093274,
+      "sha256": "8eed0754f1d23c8dd20f53cf4cac8cbb37dc28dd4794cb46443c20a20e475153"
+    },
+    {
+      "file": "chat.jpg",
+      "bytes": 158307,
+      "sha256": "13e56321a8336471f647a2b0324cb6852dcfafbb65ffe3eae4b2368a3f98bd33"
+    }
+  ]
+}

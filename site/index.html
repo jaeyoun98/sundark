@@ -29,56 +29,65 @@
           <p class="intro">나의 컴퓨터, 나의 논문 작업실</p>
           <h1>논문을 넘어,<br />이해에 닿도록.</h1>
           <p class="lead">
-            낯선 언어에서 막히지 않고, 중요한 질문을 놓치지 않도록. 원문과 번역, 논문의 구조와
-            대화를 한곳에 펼쳐보세요.
+            번역으로 읽고, 핵심을 짚고, 막히면 질문하세요. 한 편의 논문을 내 지식으로 만드는 읽기를
+            시작하세요.
           </p>
           <div class="actions">
-            <a class="button" href="#start">내 컴퓨터에 설치하기</a
-            ><a class="text-link" href="#reading">어떻게 읽나요?</a>
+            <a class="button" href="#start">설치하고 읽기 시작하기</a
+            ><a class="text-link" href="#reading">읽는 모습 보기</a>
           </div>
           <p class="small">Claude Code · Hermes · ChatGPT의 구독 로그인으로 사용</p>
         </div>
-        <div class="reader" aria-label="원문과 한국어 번역을 나란히 읽는 화면 예시">
-          <div class="reader-bar">
-            <span class="reader-title">Sundark / 나의 라이브러리</span
-            ><span class="status">원문 + 번역</span>
-          </div>
-          <div class="reader-heading">
-            <span lang="en">Reading, with context.</span><span>1 / 8</span>
-          </div>
-          <div class="spread">
-            <div class="paper" lang="en">
-              <p class="paper-label">Original</p>
-              <h2>A better way to<br />understand research</h2>
-              <p class="abstract">Abstract</p>
-              <p>Reading a paper means connecting its central question, method, and evidence.</p>
-              <p class="highlight">
-                Keeping the original text beside a translation helps readers return to the source.
+        <figure class="demo hero-demo">
+          <video
+            controls
+            playsinline
+            preload="none"
+            width="1600"
+            height="1000"
+            poster="./assets/demos/translation.jpg"
+            aria-label="Attention Is All You Need 원문과 한국어 번역 연동 시연"
+            aria-describedby="translation-caption"
+          >
+            <source src="./assets/demos/translation.mp4" type="video/mp4" />
+            <track
+              kind="captions"
+              src="./assets/demos/translation.ko.vtt"
+              srclang="ko"
+              label="한국어"
+              default
+            />
+            <track
+              kind="captions"
+              src="./assets/demos/translation.en.vtt"
+              srclang="en"
+              label="English"
+            />
+            브라우저에서 영상을 재생할 수 없습니다. 아래 링크로 영상을 내려받거나 장면 설명을
+            읽어보세요.
+          </video>
+          <figcaption>
+            <strong id="translation-caption">번역으로 읽고, 원문으로 확인하세요.</strong>
+            <p class="demo-source">
+              시연 논문: Vaswani 외,
+              <a href="https://arxiv.org/abs/1706.03762"
+                ><cite lang="en">Attention Is All You Need</cite></a
+              >
+              (2017).
+            </p>
+            <details class="demo-transcript">
+              <summary>영상 장면 설명</summary>
+              <p>
+                논문 원문 PDF와 한국어 번역을 나란히 엽니다. Transformer를 제안하는 번역 문장을
+                선택하면 대응하는 원문에도 하이라이트가 표시됩니다. 순환·합성곱 없이 attention을
+                사용하는 논문의 제안을 원문과 함께 확인합니다.
               </p>
-              <div class="diagram" aria-hidden="true">
-                <span>Question</span><i></i><span>Method</span><i></i><span>Evidence</span>
-              </div>
-              <p>Understanding grows through careful reading and asking better questions.</p>
-            </div>
-            <div class="translation">
-              <p class="paper-label">한국어 번역</p>
-              <h2>연구를 더 깊이<br />이해하는 방법</h2>
-              <p class="abstract">초록</p>
-              <p>논문을 읽는 일은 핵심 질문과 방법, 그리고 근거를 연결하는 일이다.</p>
-              <p class="highlight">
-                번역 옆에 원문을 두면 언제든 출처로 돌아가 내용을 확인할 수 있다.
-              </p>
-              <p>차분히 읽고 더 나은 질문을 던지는 과정에서 이해가 깊어진다.</p>
-              <div class="note">
-                <span>읽다가 떠오른 질문</span>
-                <p>이 방법은 어떤 문제를 해결하나요?</p>
-              </div>
-            </div>
-          </div>
-          <p class="example-label">
-            읽기 방식을 설명하기 위한 예시이며, 실제 논문이나 실행 화면이 아닙니다.
-          </p>
-        </div>
+              <a class="demo-download" href="./assets/demos/translation.mp4" download
+                >번역 시연 영상 내려받기</a
+              >
+            </details>
+          </figcaption>
+        </figure>
       </section>
       <section class="reading wrap" id="reading">
         <div class="section-heading">
@@ -87,43 +96,117 @@
         </div>
         <div class="features">
           <article>
-            <h3>원문과 번역 사이를 자연스럽게</h3>
-            <p>
-              원문 PDF와 번역을 나란히 읽고 문장 단위 하이라이트로 대응하는 내용을 확인하세요. 읽던
-              위치에서 생각을 이어갈 수 있습니다.
-            </p>
+            <h3>언어에 막히지 않도록</h3>
+            <p>번역으로 읽다가 궁금한 문장은 원문과 바로 맞춰보세요.</p>
           </article>
           <article>
-            <h3>논문 전체의 구조부터 차근차근</h3>
-            <p>
-              요약과 Research Anatomy로 문제, 방법, 결과의 연결을 살펴보세요. 세부 내용으로 들어가기
-              전에 큰 그림을 잡습니다.
-            </p>
+            <h3>긴 논문도 핵심부터</h3>
+            <p>무엇을 풀었고, 어떻게 풀었는지. 큰 그림을 잡고 깊이 읽으세요.</p>
           </article>
           <article>
-            <h3>궁금한 순간, 논문에 질문하기</h3>
-            <p>
-              논문을 바탕으로 대화하며 이해를 넓히세요. AI의 설명은 원문의 근거와 함께 확인하고,
-              중요한 질문은 계속 이어가세요.
-            </p>
+            <h3>막히는 순간에는 질문을</h3>
+            <p>어려운 수식도, 낯선 개념도. 읽던 논문에 질문하며 이해를 이어가세요.</p>
           </article>
           <article>
-            <h3>내 폴더가 곧 라이브러리</h3>
-            <p>
-              PDF를 폴더에 넣거나 직접 업로드하세요. 번역과 요약은 로컬에 캐시되어 같은 논문을 다시
-              열 때 이어서 읽기 좋습니다.
-            </p>
+            <h3>다시 펼치고 싶은 나만의 서재</h3>
+            <p>논문과 번역, 요약을 모아두고 필요할 때 다시 꺼내 읽으세요.</p>
           </article>
+        </div>
+        <div class="demo-grid">
+          <figure class="demo">
+            <video
+              controls
+              playsinline
+              preload="none"
+              width="1600"
+              height="1000"
+              poster="./assets/demos/anatomy.jpg"
+              aria-label="Attention Is All You Need Research Anatomy와 원문 근거 이동 시연"
+              aria-describedby="anatomy-caption"
+            >
+              <source src="./assets/demos/anatomy.mp4" type="video/mp4" />
+              <track
+                kind="captions"
+                src="./assets/demos/anatomy.ko.vtt"
+                srclang="ko"
+                label="한국어"
+                default
+              />
+              <track
+                kind="captions"
+                src="./assets/demos/anatomy.en.vtt"
+                srclang="en"
+                label="English"
+              />
+              브라우저에서 영상을 재생할 수 없습니다. 아래 링크로 영상을 내려받거나 장면 설명을
+              읽어보세요.
+            </video>
+            <figcaption>
+              <strong id="anatomy-caption">핵심을 짚고, 근거까지 확인하세요.</strong>
+              <details class="demo-transcript">
+                <summary>영상 장면 설명</summary>
+                <p>
+                  <cite lang="en">Attention Is All You Need</cite>의 Research Anatomy를 엽니다. 핵심
+                  주장에 있는 Transformer 제안 문장의 원문 근거를 선택하면 PDF의 해당 위치로
+                  이동합니다.
+                </p>
+                <a class="demo-download" href="./assets/demos/anatomy.mp4" download
+                  >Anatomy 시연 영상 내려받기</a
+                >
+              </details>
+            </figcaption>
+          </figure>
+          <figure class="demo">
+            <video
+              controls
+              playsinline
+              preload="none"
+              width="1600"
+              height="1000"
+              poster="./assets/demos/chat.jpg"
+              aria-label="Attention Is All You Need의 attention 수식에 질문하는 채팅 시연"
+              aria-describedby="chat-caption"
+            >
+              <source src="./assets/demos/chat.mp4" type="video/mp4" />
+              <track
+                kind="captions"
+                src="./assets/demos/chat.ko.vtt"
+                srclang="ko"
+                label="한국어"
+                default
+              />
+              <track
+                kind="captions"
+                src="./assets/demos/chat.en.vtt"
+                srclang="en"
+                label="English"
+              />
+              브라우저에서 영상을 재생할 수 없습니다. 아래 링크로 영상을 내려받거나 장면 설명을
+              읽어보세요.
+            </video>
+            <figcaption>
+              <strong id="chat-caption">어려운 수식도, 질문에서 이해로.</strong>
+              <details class="demo-transcript">
+                <summary>영상 장면 설명</summary>
+                <p>
+                  Scaled dot-product attention에서 √d_k로 나누는 이유를 질문합니다. 실제 AI 답변은
+                  d_k가 query와 key 벡터의 차원이며, softmax 이전에 내적을 √d_k로 나누면 큰 내적에
+                  의해 gradient가 작아지는 현상을 완화한다고 설명합니다. 원문 3.2.1절과 각주 4를
+                  함께 확인합니다.
+                </p>
+                <a class="demo-download" href="./assets/demos/chat.mp4" download
+                  >채팅 시연 영상 내려받기</a
+                >
+              </details>
+            </figcaption>
+          </figure>
         </div>
       </section>
       <section class="local">
         <div class="wrap local-inner">
           <h2>익숙한 AI와 함께.<br />작업 공간은 내 컴퓨터에.</h2>
           <div>
-            <p>
-              Claude Code, Hermes, ChatGPT 중 사용할 AI를 선택하고 작업별 모델을 설정하세요. 별도
-              API 키 없이 구독 로그인으로 시작합니다.
-            </p>
+            <p>이미 쓰는 AI 구독으로 시작하세요. 논문과 읽던 기록을 내 컴퓨터에 모아두세요.</p>
             <p class="small">
               구독별 사용량 제한이 적용됩니다. AI 기능을 사용하면 논문 내용이 선택한 AI 제공자에게
               전송됩니다. Sundark는 개인용 로컬 앱입니다.

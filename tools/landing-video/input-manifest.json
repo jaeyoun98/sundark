@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "release": "landing-media-2026-10-15-v1",
+  "repository": "jmy-org/sundark",
+  "inputs": [
+    {
+      "clip": "translation",
+      "file": "source-translation.mp4",
+      "bytes": 1003679,
+      "sha256": "180811d9256fdde83f544750be581a2b64db62a09fe097ef679ac7291ffd1913",
+      "url": "https://github.com/jmy-org/sundark/releases/download/landing-media-2026-10-15-v1/source-translation.mp4"
+    },
+    {
+      "clip": "anatomy",
+      "file": "source-anatomy.mp4",
+      "bytes": 914191,
+      "sha256": "d1f24f84819284ad51751e445dedf8336becd522a2e6545be4e2f16fc97fa807",
+      "url": "https://github.com/jmy-org/sundark/releases/download/landing-media-2026-10-15-v1/source-anatomy.mp4"
+    },
+    {
+      "clip": "chat",
+      "file": "source-chat.mp4",
+      "bytes": 1061642,
+      "sha256": "44150217666ab974ee8a3ca63d4f5350272cfe6a765ab8cea51633a6050342c3",
+      "url": "https://github.com/jmy-org/sundark/releases/download/landing-media-2026-10-15-v1/source-chat.mp4"
+    }
+  ]
+}

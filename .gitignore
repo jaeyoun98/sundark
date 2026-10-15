@@ -15,3 +15,7 @@ __pycache__/
 
 # JavaScript development tooling
 node_modules/
+
+# Landing media is fetched from the pinned GitHub Release for previews/Pages.
+/site/assets/demos/*.mp4
+/site/assets/demos/*.jpg

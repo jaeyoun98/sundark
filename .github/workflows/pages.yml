@@ -5,6 +5,7 @@ on:
     branches: [main]
     paths:
       - "site/**"
+      - "scripts/fetch_landing_media.py"
       - ".github/workflows/pages.yml"
   workflow_dispatch:
 
@@ -31,6 +32,8 @@ jobs:
           persist-credentials: false
       - name: Configure Pages
         uses: actions/configure-pages@v5
+      - name: Fetch and verify pinned landing media
+        run: python3 scripts/fetch_landing_media.py
       - name: Upload static landing page
         uses: actions/upload-pages-artifact@v4
         with:

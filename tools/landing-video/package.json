@@ -1,0 +1,28 @@
+{
+  "name": "sundark-landing-video",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "studio": "remotion studio src/index.tsx --no-open",
+    "check": "tsc --noEmit && oxlint src",
+    "render:translation": "remotion render src/index.tsx Translation out/translation.mp4 --codec=h264 --crf=26 --image-format=jpeg --jpeg-quality=90 --concurrency=2",
+    "render:anatomy": "remotion render src/index.tsx Anatomy out/anatomy.mp4 --codec=h264 --crf=26 --image-format=jpeg --jpeg-quality=90 --concurrency=2",
+    "render:chat": "remotion render src/index.tsx Chat out/chat.mp4 --codec=h264 --crf=26 --image-format=jpeg --jpeg-quality=90 --concurrency=2",
+    "format": "oxfmt src package.json tsconfig.json"
+  },
+  "dependencies": {
+    "@remotion/cli": "4.0.535",
+    "react": "19.2.4",
+    "react-dom": "19.2.4",
+    "remotion": "4.0.535"
+  },
+  "devDependencies": {
+    "@types/react": "19.2.14",
+    "@types/react-dom": "19.2.3",
+    "oxfmt": "0.73.0",
+    "oxlint": "1.88.0",
+    "typescript": "5.9.3"
+  },
+  "packageManager": "pnpm@12.11.2"
+}
