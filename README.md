@@ -12,6 +12,8 @@ Inspired by sites like themoonlight.io, but kept simple and private.
 > Personal/local use only. No reader access control. Subscription usage limits apply. Only `app/backends/`
 > starts AI processes; serving other people would need a billable API backend there.
 
+The public landing page lives in [`site/`](site/README.md), separate from the local reader.
+
 ## Requirements (macOS)
 
 1. **ChatGPT** with eligible plan access, or **Claude Code** / **Hermes** installed and logged in.
@@ -139,6 +141,7 @@ app/
   pdf_utils.py   PyMuPDF text extraction
   store.py       local PDF + result cache
 web/             static reader UI (pdf.js + marked, no build step)
+site/            public landing page, deployed separately to GitHub Pages
 papers/          your PDFs (gitignored)
 data/            runtime cache (gitignored)
 ```

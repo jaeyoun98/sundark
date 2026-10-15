@@ -34,7 +34,7 @@ the project comment now reflects the startup failure when model loading fails.
 The token has only `contents: read`, checkout does not persist credentials, and
 the workflow does not consume secrets. New runs cancel older runs for the same
 PR or branch. The Ubuntu job has a 30-minute limit; the Windows auth job has a
-10-minute limit. There is no deployment job.
+10-minute limit. Landing-page delivery runs in a separate Pages workflow.
 
 ## Windows credential regression checks
 
@@ -112,27 +112,22 @@ Source files are deliberately not reformatted here because PR #4 is changing
 `web/app.js`. After that work lands, format the sources in a dedicated change and
 remove `continue-on-error` and the advisory-report step to make this gate required.
 
-## Delivery decision
+## Landing-page delivery
 
-Sundark is documented as a personal local app served on `127.0.0.1:8743`, using
-the user's signed-in Claude Code or Hermes subscription. No hosted deployment
-target or release packaging policy is defined in the repository.
+Sundark remains a personal local app served on `127.0.0.1:8743`. The separate
+`site/` directory is a static Korean product introduction and installation guide;
+it does not expose the reader, subscription sessions, or uploaded papers.
 
-Read-only GitHub inspection on 2026-10-13 found: default branch `main`, the
-existing Format Check workflow plus GitHub's dependency-graph workflow, no
-deployment records or environments, Pages disabled, no rulesets, and no classic
-protection on `main`. Actions is enabled with a read-only default token. This is
-a snapshot, not a guarantee that deployment is absent outside GitHub.
+`.github/workflows/pages.yml` deploys only `site/` to GitHub Pages using the
+repository's `github-pages` environment. Changes to `site/**` or the workflow on
+`main` trigger delivery; manual dispatch is also available. The repository Pages
+publishing source must be set to GitHub Actions before the first deployment.
+The workflow uses only `contents: read`, `pages: write`, and `id-token: write`.
+No personal access token or AI credentials are included in the artifact.
 
-Before implementing CD, choose:
-
-1. Delivery target: a versioned local installation/release, or a named hosted
-   service with an agreed authentication and data-persistence design.
-2. Trigger and approval: release tag/manual approval versus automatic delivery
-   after successful `main` CI, plus rollback/version retention policy.
-3. For hosting, the environment owner and approved credential mechanism. Do not
-   place a user's subscription session or uploaded papers in GitHub artifacts.
-
-After a successful hosted CI run, the owner can separately approve making
-**Check code formatting** required on `main` and requiring PR review. Repository
-rules, environments, secrets, and actual deployment are not changed by this PR.
+This workflow is independent of the application regression suite because it
+publishes only static marketing files. Validate the landing page separately using
+the preview instructions in `site/README.md`, then check the Pages workflow and
+published URL. A successful application CI run alone does not prove publication.
+Restore the previous site revision on `main` to roll back. Hosting the actual
+reader would require a separate authentication and data-persistence design.
