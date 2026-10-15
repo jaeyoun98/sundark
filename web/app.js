@@ -1556,8 +1556,10 @@ $("pdfview").addEventListener("wheel", (e) => {
     const delta = Math.max(-100, Math.min(100, wheelZoomDelta));
     wheelZoomDelta = 0;
     if (!S.pdf || !S.pages.length) return;
+    // setScale may skip a tiny redraw; keep accumulating from the requested zoom.
+    const currentPct = S.zoom.mode === "pct" ? S.zoom.pct : S.scale / PT_PX * 100;
     const pct = Math.max(ZOOM_STEPS[0], Math.min(ZOOM_STEPS[ZOOM_STEPS.length - 1],
-      S.scale / PT_PX * 100 * Math.exp(-delta * 0.002)));
+      currentPct * Math.exp(-delta * 0.002)));
     setZoom({ mode: "pct", pct }, wheelZoomAnchor);
   });
 }, { passive: false });

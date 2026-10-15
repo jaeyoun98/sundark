@@ -169,6 +169,41 @@ function close(a, b) {
   close(page.S.scale, 2 * Math.exp(100 * 0.002));
 }
 
+// Slow pinches must accumulate across frames even when each change is too small to redraw.
+for (const deltaY of [-0.1, 0.1]) {
+  const f = fixture(),
+    initial = f.S.scale;
+  const before = point(f, 1, 310, 360);
+  f.wheel({ deltaY });
+  f.flush();
+  assert.equal(f.S.scale, initial, "one tiny delta stays below the redraw threshold");
+  for (let i = 1; i < 100; i++) {
+    assert.equal(f.wheel({ deltaY }).defaultPrevented, true);
+    f.flush();
+  }
+  const expected = initial * Math.exp(-100 * deltaY * 0.002);
+  close((f.S.zoom.pct / 100) * (96 / 72), expected);
+  assert.ok(
+    Math.abs(f.S.scale - expected) < 0.001,
+    "sub-threshold changes accumulate into redraws",
+  );
+  const after = point(f, 1, 310, 360);
+  close(before.x, after.x);
+  close(before.y, after.y);
+}
+
+// A fit mode starts from the displayed scale, not its stale saved percentage.
+{
+  const f = fixture();
+  f.context.setZoom({ mode: "width", pct: 250 });
+  const initial = f.S.scale;
+  for (let i = 0; i < 100; i++) {
+    f.wheel({ deltaY: 0.1 });
+    f.flush();
+  }
+  close((f.S.zoom.pct / 100) * (96 / 72), initial * Math.exp(-0.02));
+}
+
 // At both limits Ctrl+wheel still cannot trigger whole-app zoom. Buttons retain center anchoring.
 {
   const f = fixture();
