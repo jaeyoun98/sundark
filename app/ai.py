@@ -362,6 +362,58 @@ async def translate_stream(segments: list[str], target_lang: str, brief: str = "
         raise AIError("Translation stream ended before every segment was translated")
 
 
+def latex_ok(latex: str) -> bool:
+    """Reject transcriptions KaTeX cannot render: unbalanced braces or \begin/\end pairs
+    (e.g. a vision model appending a stray "\end{final")."""
+    if not latex.strip():
+        return False
+    body = re.sub(r"\\[{}]", "", latex)  # escaped braces are literal
+    depth = 0
+    for ch in body:
+        depth += {"{": 1, "}": -1}.get(ch, 0)
+        if depth < 0:
+            return False
+    if depth:
+        return False
+    stack = []
+    for kind, env in re.findall(r"\\(begin|end)\{([^}]*)\}", body):
+        if kind == "begin":
+            stack.append(env)
+        elif not stack or stack.pop() != env:
+            return False
+    return not stack and not re.search(r"\\(begin|end)(?!\{)", body)
+
+
+_MATH_SPANS = re.compile(r"\\\(.*?\\\)|\\\[.*?\\\]|\$\$.*?\$\$|\$[^$]*\$", re.S)
+_SCRIPTS = {
+    "Korean": r"[\uac00-\ud7a3]+",
+    "Japanese": r"[\u3040-\u30ff\u4e00-\u9fff]",
+    "Chinese": r"[\u4e00-\u9fff]",
+}
+
+
+def untranslated(src: str, tr: str, target_lang: str) -> bool:
+    """True when a translation into Korean/Japanese/Chinese is still mostly English. Korean
+    words are counted as space-separated runs; Japanese/Chinese characters count as half a
+    word. Short or symbolic sources and mostly capitalized ones (names, titles, references)
+    are never flagged."""
+    script = _SCRIPTS.get(target_lang)
+    if not script:
+        return False
+    src_words = re.findall(r"[A-Za-z]{2,}", _MATH_SPANS.sub(" ", src))
+    if len(src_words) < 8:
+        return False
+    # Names, titles, and references are mostly capitalized and rightly stay in English.
+    if sum(w[0].isupper() for w in src_words) >= len(src_words) / 2:
+        return False
+    text = _MATH_SPANS.sub(" ", tr)
+    latin = len(re.findall(r"[A-Za-z]{2,}", text))
+    native = len(re.findall(script, text))
+    if target_lang != "Korean":
+        native /= 2
+    return latin >= 6 and latin > 2 * native
+
+
 async def equation_latex(png: bytes) -> str:
     """Transcribe one display equation from its rendered crop. The image travels inline in the
     message with every tool disabled (ADR 0002)."""
@@ -376,7 +428,8 @@ async def equation_latex(png: bytes) -> str:
     latex = re.sub(r"^```(?:latex)?\s*|\s*```$", "", latex).strip()
     if latex.startswith("\\[") and latex.endswith("\\]"):
         latex = latex[2:-2].strip()
-    return latex.strip("$").strip()
+    latex = latex.strip("$").strip()
+    return latex if latex_ok(latex) else ""  # e.g. a stray "\\end{final" appended
 
 
 _MAX_TURNS = 20

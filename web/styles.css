@@ -248,6 +248,7 @@ button { font: inherit; }
 .chatgpt-actions { display: flex; flex-wrap: wrap; gap: 8px; }
 #chatgpt-settings { margin: 12px 0; }
 #chatgpt-link-row a { color: var(--accent); }
+.treqno { float: right; color: var(--muted, #888); margin-left: 8px; }
 .lib-src { display: flex; gap: 6px; padding: 0 14px 8px; }
 .lib-src button { flex: 1; padding: 5px 0; border-radius: 6px; border: 1px solid var(--line, #333);
   background: transparent; color: var(--muted); cursor: pointer; font-size: 12px; }

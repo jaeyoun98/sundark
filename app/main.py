@@ -337,8 +337,10 @@ _layout_lock = asyncio.Lock()
 # page's text; running heads match by
 # letters; page 0 cuts at a real Abstract heading and keeps a caption above it; only the
 # reference list is skipped, from a whole-line References heading to an appendix heading or
-# the first page that is not a reference list.)
-_LAYOUT_VERSION = 10
+# the first page that is not a reference list. v11: attach a lone equation number "(1)"
+# to the display equation beside it (as the sentence's "eqno") instead of dropping it as a
+# short fragment.)
+_LAYOUT_VERSION = 11
 
 
 def _page_layout_cached(doc_id: str, page: int) -> dict:
@@ -446,6 +448,10 @@ async def math(doc_id: str, page: int):
     key = f"math_v{_LAYOUT_VERSION}_{ai.cache_tag('equation')}_{page}"
     cached = store.cache_get(doc_id, key)
     if cached:
+        # Drop transcriptions cached before latex_ok() existed that KaTeX cannot render.
+        cached["equations"] = [
+            e for e in cached.get("equations", []) if ai.latex_ok(e.get("latex", ""))
+        ]
         return cached
     lay = await _layout_async(doc_id, page)
     pdf_bytes = store.pdf_path(doc_id).read_bytes()
@@ -793,6 +799,18 @@ async def translate(req: TranslateReq):
     return result
 
 
+async def _retranslate(src: str, target_lang: str) -> str:
+    """One more single-sentence attempt for a sentence the model left mostly untranslated.
+    Returns the new translation, or "" if it failed or is still untranslated."""
+    try:
+        again = (await ai.translate(src, target_lang)).strip()
+    except RateLimitError:
+        raise
+    except AIError:
+        return ""
+    return again if again and not ai.untranslated(src, again, target_lang) else ""
+
+
 @app.post("/api/translate_stream")
 async def translate_stream(req: TranslateReq):
     """Progressive translation: streams one NDJSON line {"i":k,"tr":"..."} per segment
@@ -818,10 +836,36 @@ async def translate_stream(req: TranslateReq):
         if not req.force:
             cached = store.cache_get(req.doc_id, key)
             if cached:
+                changed = False
                 for k, seg in enumerate(cached["segments"]):
+                    # Cached before the untranslated() check existed: fix it once, then
+                    # mark it so a sentence that stays English is not retried every open.
+                    if not seg.get("checked") and ai.untranslated(
+                        seg["src"], seg["tr"], req.target_lang
+                    ):
+                        try:
+                            better = await _retranslate(seg["src"], req.target_lang)
+                        except RateLimitError as exc:
+                            yield (
+                                json.dumps(
+                                    {"error": str(exc), "rate_limited": True},
+                                    ensure_ascii=False,
+                                )
+                                + "\n"
+                            )
+                            return
+                        else:
+                            seg["checked"], changed = True, True
+                        if better:
+                            seg["tr"] = better
                     yield (
                         json.dumps({"i": k, "tr": seg["tr"]}, ensure_ascii=False) + "\n"
                     )
+                if changed:
+                    cached["translation"] = "\n\n".join(
+                        x["tr"] for x in cached["segments"]
+                    )
+                    store.cache_put(req.doc_id, key, cached)
                 return
         if not segs:
             store.cache_put(req.doc_id, key, {"segments": [], "translation": ""})
@@ -831,26 +875,35 @@ async def translate_stream(req: TranslateReq):
         # printed index — and a misaligned stream errors out instead of being shown or cached. On
         # an AIError the client retries the batch and finally falls back to source text.
         collected: list[str] = []
+        held: list[int] = []  # sentences the model left mostly untranslated
         try:
             brief = await _get_brief(req.doc_id, doc, req.target_lang)
             chunks = ai.translate_stream(segs, req.target_lang, brief=brief)
             try:
                 async for tr in chunks:
-                    yield (
-                        json.dumps({"i": len(collected), "tr": tr}, ensure_ascii=False)
-                        + "\n"
-                    )
+                    k = len(collected)
                     collected.append(tr)
+                    if ai.untranslated(segs[k], tr, req.target_lang):
+                        held.append(k)  # shown after a second, single-sentence attempt
+                        continue
+                    yield json.dumps({"i": k, "tr": tr}, ensure_ascii=False) + "\n"
             finally:
                 await chunks.aclose()
+            for k in held:
+                collected[k] = (
+                    await _retranslate(segs[k], req.target_lang) or collected[k]
+                )
+                yield (
+                    json.dumps({"i": k, "tr": collected[k]}, ensure_ascii=False) + "\n"
+                )
         except AIError as exc:
-            limited = isinstance(exc, RateLimitError)
             logging.getLogger(__name__).warning(
                 "Translation batch failed: page=%s kind=%s reason=%s",
                 req.page + 1,
                 type(exc).__name__,
                 str(exc),
             )
+            limited = isinstance(exc, RateLimitError)
             yield (
                 json.dumps(
                     {"error": str(exc), "rate_limited": limited}, ensure_ascii=False

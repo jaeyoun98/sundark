@@ -639,6 +639,7 @@ function ensureLayout(i) {
         para: s.para,
         size: s.size,
         heading: s.heading,
+        eqno: s.eqno || null,  // equation number "(1)" printed beside a display equation
         rects: lineRects(s.words.map((wi) => L.words[wi]), !s.equation),  // in points
         // A sentence that wraps to the next page carries that page's word boxes too, so the
         // highlight can span both pages.
@@ -986,8 +987,15 @@ function preparePage(i) {
       para.appendChild(document.createElement("br"));
     }
     const sp = makeTrSeg(i, k, "");
+    if (seg.eqno) sp.dataset.eqno = seg.eqno;
     if (isBullet) sp.classList.add("trbullet");
     para.appendChild(sp);
+    if (seg.eqno) {
+      // Shown beside the translated equation until the image-read LaTeX takes it as \tag.
+      const no = document.createElement("span");
+      no.className = "treqno"; no.textContent = "(" + seg.eqno + ")";
+      para.appendChild(no);
+    }
     para.appendChild(document.createTextNode(" "));
     P.spanByK[k] = sp;
   });
@@ -1051,7 +1059,16 @@ async function fetchMath(i, wrap) {
     if (!d.equations || !d.equations.length) return;
     for (const eq of d.equations) {
       const sp = wrap.querySelector(`.trseg[data-i="${eq.i}"]`);
-      if (sp && eq.latex) sp.textContent = "\\[ " + eq.latex + " \\]";
+      if (!sp || !eq.latex) continue;
+      // Keep the translation's own math if KaTeX cannot render the image-read LaTeX.
+      if (window.katex) {
+        try { window.katex.renderToString(eq.latex, { displayMode: true, throwOnError: true }); }
+        catch { continue; }
+      }
+      const tag = sp.dataset && sp.dataset.eqno ? " \\tag{" + sp.dataset.eqno + "}" : "";
+      sp.textContent = "\\[ " + eq.latex + tag + " \\]";
+      const no = sp.nextElementSibling;
+      if (tag && no && no.classList.contains("treqno")) no.remove();
     }
     renderMath(wrap);
   } catch { /* best-effort: keep the original text if math fetch fails */ }
