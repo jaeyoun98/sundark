@@ -1502,10 +1502,10 @@ function showZoom() {
   $("fit-page").classList.toggle("on", S.zoom.mode === "page");
 }
 
-function setZoom(z) {
+function setZoom(z, anchor) {
   S.zoom = z;
   try { localStorage.setItem("pdfZoom", JSON.stringify(z)); } catch (e) {}
-  if (S.pdf && S.pages.length) setScale(zoomScale());
+  if (S.pdf && S.pages.length) setScale(zoomScale(), anchor);
   showZoom();
 }
 
@@ -1541,13 +1541,38 @@ $("zoom-out").addEventListener("click", () => stepZoom(-1));
 $("fit-width").addEventListener("click", () => setZoom({ mode: "width", pct: S.zoom.pct }));
 $("fit-page").addEventListener("click", () => setZoom({ mode: "page", pct: S.zoom.pct }));
 
-// Resize every page to scale `ns` in place and keep the point at the middle of the view where it
-// is. The pages keep their layout, sentences and translation state (rebuilding S.pages would
-// orphan a translation still in progress); only their drawing is redone, near the view first.
-function setScale(ns) {
+// Only the PDF pane consumes Ctrl+wheel (including trackpad pinch). Everywhere else the
+// browser keeps its normal whole-app zoom. Coalesce high-frequency input into one redraw.
+let wheelZoomFrame = 0, wheelZoomDelta = 0, wheelZoomAnchor;
+$("pdfview").addEventListener("wheel", (e) => {
+  if (!e.ctrlKey || !e.cancelable || !S.pdf || !S.pages.length || !e.deltaY) return;
+  e.preventDefault();  // also at the zoom limits: never fall through to browser zoom here
+  const unit = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? $("pdfview").clientHeight : 1;
+  wheelZoomDelta += e.deltaY * unit;
+  wheelZoomAnchor = { x: e.clientX, y: e.clientY };
+  if (wheelZoomFrame) return;
+  wheelZoomFrame = requestAnimationFrame(() => {
+    wheelZoomFrame = 0;
+    const delta = Math.max(-100, Math.min(100, wheelZoomDelta));
+    wheelZoomDelta = 0;
+    if (!S.pdf || !S.pages.length) return;
+    // setScale may skip a tiny redraw; keep accumulating from the requested zoom.
+    const currentPct = S.zoom.mode === "pct" ? S.zoom.pct : S.scale / PT_PX * 100;
+    const pct = Math.max(ZOOM_STEPS[0], Math.min(ZOOM_STEPS[ZOOM_STEPS.length - 1],
+      currentPct * Math.exp(-delta * 0.002)));
+    setZoom({ mode: "pct", pct }, wheelZoomAnchor);
+  });
+}, { passive: false });
+
+// Resize every page to scale `ns` in place and keep the point under the pointer (or the
+// middle of the view for buttons/refitting) where it is. The pages keep their layout,
+// sentences and translation state (rebuilding S.pages would orphan a translation still in
+// progress); only their drawing is redone, near the view first.
+function setScale(ns, anchor) {
   if (Math.abs(ns - S.scale) < 0.001) return;
   const view = $("pdfview"), vb = view.getBoundingClientRect();
-  const ax = vb.left + view.clientWidth / 2, ay = vb.top + view.clientHeight / 2;
+  const ax = anchor ? anchor.x : vb.left + view.clientWidth / 2;
+  const ay = anchor ? anchor.y : vb.top + view.clientHeight / 2;
   // the page under the anchor (or the last one above it) and the anchor's place on it, in points
   let at = 0;
   for (let i = 1; i < S.pages.length && S.pages[i].el.getBoundingClientRect().top <= ay; i++) at = i;

@@ -105,6 +105,10 @@ You can still **Upload PDF** from the top bar for one-off files.
 Results are cached per paper **and per AI Backend and model** under `data/`, so reopening is instant
 and doesn't re-spend usage. Text-based PDFs only (scanned images need OCR — not yet).
 
+Over the PDF pane, **Ctrl + mouse wheel** zooms just the paper around the pointer.
+Over the library, AI panel, or top bar, it keeps the browser's whole-app zoom.
+The PDF's **+ / −**, **fit width**, and **fit page** controls remain available.
+
 ### Paper identity and titles
 
 When you open a PDF, Sundark looks for its DOI or arXiv ID on the first two pages and
