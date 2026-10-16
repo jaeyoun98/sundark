@@ -27,7 +27,17 @@ from fastapi.responses import (
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, StrictBool
 
-from . import ai, backends, biblio, layout_model, paper_id, pdf_utils, settings, store
+from . import (
+    ai,
+    backends,
+    biblio,
+    layout_model,
+    paper_id,
+    pdf_utils,
+    settings,
+    store,
+    zotero,
+)
 from .backends import chatgpt_auth
 from .errors import AIError, RateLimitError
 
@@ -242,6 +252,57 @@ async def open_paper(req: OpenReq):
         raise HTTPException(404, "Paper not found")
     try:
         return _schedule_prewarm(await _ingest(path.read_bytes()))
+    except Exception as e:
+        raise HTTPException(400, f"Could not read PDF: {e}") from e
+
+
+# --- Zotero (read-only, through Zotero's local API) ---
+
+
+async def _zotero(fn, *args, **kwargs):
+    """Run a blocking Zotero call off the event loop; a down Zotero becomes HTTP 503."""
+    try:
+        return await asyncio.to_thread(fn, *args, **kwargs)
+    except zotero.ZoteroError as exc:
+        raise HTTPException(503, str(exc)) from exc
+
+
+@app.get("/api/zotero/status")
+async def zotero_status():
+    return {"available": await asyncio.to_thread(zotero.available)}
+
+
+@app.get("/api/zotero/collections")
+async def zotero_collections():
+    return {"collections": await _zotero(zotero.collections)}
+
+
+@app.get("/api/zotero/items")
+async def zotero_items(
+    collection: str | None = None, q: str | None = None, start: int = 0
+):
+    return await _zotero(zotero.items, collection=collection, q=q, start=start)
+
+
+class ZoteroOpenReq(BaseModel):
+    item: str
+    attachment: str
+
+
+@app.post("/api/zotero/open")
+async def zotero_open(req: ZoteroOpenReq):
+    """Open a Zotero PDF where it is (no copy into papers/); Zotero's DOI and item key feed
+    the Paper ID (ADR 0001)."""
+    path = await _zotero(zotero.pdf_path, req.attachment)
+    doi = await _zotero(zotero.item_doi, req.item)
+    if not path.is_file() or path.suffix.lower() != ".pdf":
+        raise HTTPException(404, "The PDF file for this Zotero item was not found")
+    try:
+        return _schedule_prewarm(
+            await _ingest(path.read_bytes(), {"key": req.item, "doi": doi})
+        )
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(400, f"Could not read PDF: {e}") from e
 

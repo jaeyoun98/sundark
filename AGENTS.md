@@ -20,6 +20,10 @@ Backend (Claude Code, Hermes, or ChatGPT) — never a billable API key.
   the translation glossary. `app/biblio.py` fetches the Bibliographic Record and rejects a
   DOI whose record title is not on the first page (a cited work's DOI). Zotero integration
   calls `main._ingest(data, {"key": ..., "doi": ...})`; Zotero's DOI wins.
+- **Zotero is read-only, through Zotero's local API** (`app/zotero.py`, port 23119, personal
+  library only). `/api/zotero/open` reads the PDF in place and calls
+  `_ingest(data, {"key": item, "doi": zotero_doi})`. Never copy Zotero PDFs into `papers/` and
+  never write to Zotero from here; writing (e.g. chat to a Zotero note) needs the web API.
 - **`app/pdf_utils.py`** turns a PDF page into word geometry + sentences:
   `get_text("rawdict")` for per-word position/size, margin filtering, region drop/
   heading/equation typing from the layout model's boxes (no font/stroke heuristics —

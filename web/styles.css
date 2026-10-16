@@ -248,3 +248,20 @@ button { font: inherit; }
 .chatgpt-actions { display: flex; flex-wrap: wrap; gap: 8px; }
 #chatgpt-settings { margin: 12px 0; }
 #chatgpt-link-row a { color: var(--accent); }
+.lib-src { display: flex; gap: 6px; padding: 0 14px 8px; }
+.lib-src button { flex: 1; padding: 5px 0; border-radius: 6px; border: 1px solid var(--line, #333);
+  background: transparent; color: var(--muted); cursor: pointer; font-size: 12px; }
+.lib-src button.active { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+.zot-controls { display: flex; flex-direction: column; gap: 6px; padding: 0 14px 8px; }
+.zot-controls select, .zot-controls input { width: 100%; box-sizing: border-box; font-size: 12px; padding: 5px 6px;
+  background: var(--panel2); color: var(--text); border: 1px solid var(--line, #333); border-radius: 6px; }
+.paperlist li.nopdf { opacity: .45; cursor: default; }
+.paperlist li.sub { padding-left: 24px; font-size: 12px; }
+.paperlist li.more { text-align: center; color: var(--muted); }
+.paperlist li:has(> .paper-action) { padding: 0; }
+.paperlist .paper-action { display: block; width: 100%; padding: 10px 11px;
+  border: 0; border-radius: inherit; background: transparent; color: inherit;
+  font: inherit; text-align: inherit; cursor: pointer; }
+.paperlist li.sub > .paper-action { padding-left: 24px; }
+.paperlist .paper-action:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.paperlist .paper-action:disabled { cursor: wait; }

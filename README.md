@@ -105,6 +105,16 @@ You can still **Upload PDF** from the top bar for one-off files.
 Results are cached per paper **and per AI Backend and model** under `data/`, so reopening is instant
 and doesn't re-spend usage. Text-based PDFs only (scanned images need OCR — not yet).
 
+### Zotero
+
+Switch the library to **Zotero** to browse your Zotero library: pick a collection, search by
+title, author, or year, and click an item to open its PDF. PDFs are read where Zotero stores
+them (nothing is copied), and Zotero's DOI identifies the paper, so chat history is shared with
+any other copy of the same paper. Zotero must be running with
+**Settings › Advanced › Allow other applications on this computer to communicate with Zotero**
+enabled. Paper Reader only reads from Zotero; items without a PDF are greyed out, and extra PDFs
+(e.g. supplementary material) are listed under their item.
+
 Over the PDF pane, **Ctrl + mouse wheel** zooms just the paper around the pointer.
 Over the library, AI panel, or top bar, it keeps the browser's whole-app zoom.
 The PDF's **+ / −**, **fit width**, and **fit page** controls remain available.
