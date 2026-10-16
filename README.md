@@ -96,13 +96,14 @@ You can still **Upload PDF** from the top bar for one-off files.
 
 1. Pick a paper from the **Library**, or **Upload PDF**.
 2. **AI** badge (top right): choose the AI Backend and a model per task (see
-   *AI settings*). Saving reloads the page; results are cached per backend and model.
+   *AI settings*). Saving reloads the page; results are cached per backend, model, and output language.
 3. **Summary** tab → *Generate summary*.
-4. **Translation** tab → pick a language (default Korean); it translates the page
-   shown on the left and follows you as you page through.
+4. **AI settings** → choose one output language (default Korean) for translation,
+   summary, anatomy, explanations, chat, and review notes. The **Translation** tab
+   translates the page shown on the left and follows you as you page through.
 5. **Chat** tab → ask questions about the paper.
 
-Results are cached per paper **and per AI Backend and model** under `data/`, so reopening is instant
+Results are cached per paper **and per AI Backend, model, and output language** under `data/`, so reopening is instant
 and doesn't re-spend usage. Text-based PDFs only (scanned images need OCR — not yet).
 
 ### Zotero
@@ -160,7 +161,8 @@ data/            runtime cache (gitignored)
 
 - AI Backend and models: the **AI** badge, stored in `data/settings.json`; defaults in
   `DEFAULT_MODELS` in `app/settings.py`.
-- Default translation language: the `<select>` in `web/index.html`.
+- Output language: **AI settings**, stored as `output_language` in `data/settings.json`;
+  defaults to Korean. Supported languages are defined in `app/settings.py`.
 - Papers folder: `PAPERS_DIR` env var (default `./papers`).
 
 ### Continue with ChatGPT
@@ -185,3 +187,33 @@ This backend uses the official public Responses API with ChatGPT OAuth, inline
 images, no agent tools, `store:false`, and streamed responses. Account sign-in
 and a model list alone do not prove plan access; a completed AI request does.
 See [OpenAI's sign-in guide](https://developers.openai.com/siwc/token-sharing-open-source/sign-in).
+
+### Browser regression tests
+
+```bash
+uv sync --locked
+pnpm install --frozen-lockfile
+pnpm exec playwright install chromium
+pnpm test:e2e
+```
+
+The test launches Chromium and a dedicated FastAPI server at `127.0.0.1:18743`.
+It uploads a generated PDF through the UI and exercises the production HTML,
+JavaScript, PDF renderer, PDF text extraction, AI prompts, endpoints, settings,
+and filesystem caches. Every data directory, library, and credential file is
+isolated in temporary storage; your papers, chats, settings, and accounts are
+untouched. Production-pinned CDN libraries are served from local test dependencies.
+
+The external AI transport and layout detector are deterministic test doubles, and
+the sentence splitter uses the supported pysbd fallback to avoid model downloads.
+These checks prove browser/server integration and language separation, not actual
+provider access, translation quality, layout-model accuracy, other browsers, or
+assistive-technology usability. Failures retain traces and screenshots under
+`test-results/`; open a trace with `pnpm exec playwright show-trace <trace.zip>`.
+
+For an actual-provider smoke check, run the normal app from a disposable checkout with a disposable library
+and isolated account configuration, connect your subscription, upload a
+non-sensitive paper, and generate translation, summary, anatomy, chat, and a
+review export in two languages. Check the text and generated ZIP manually; never
+interpret deterministic browser-test success as evidence that a live AI request
+completed.

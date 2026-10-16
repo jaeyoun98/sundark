@@ -19,3 +19,7 @@ node_modules/
 # Landing media is fetched from the pinned GitHub Release for previews/Pages.
 /site/assets/demos/*.mp4
 /site/assets/demos/*.jpg
+
+# Playwright failure evidence
+/test-results/
+/playwright-report/

@@ -4,7 +4,10 @@ pdfjsLib.GlobalWorkerOptions.workerSrc =
   "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
 
 const $ = (id) => document.getElementById(id);
-const lang = () => $("lang").value;
+const lang = () => {
+  if (!S.aiConfig) throw new Error("AI settings are unavailable. Reload to try again.");
+  return S.aiConfig.output_language;
+};
 
 const S = {
   docId: null,
@@ -241,6 +244,12 @@ function fillModels(backend) {
 
 function openSettings() {
   if (!S.aiConfig) return;
+  const languages = $("set-language");
+  languages.replaceChildren(...S.aiConfig.output_languages.map((language) => {
+    const option = document.createElement("option");
+    option.value = language; option.textContent = language; return option;
+  }));
+  languages.value = lang();
   const sel = $("set-backend");
   sel.innerHTML = "";
   for (const b of S.aiConfig.backends) {
@@ -269,7 +278,7 @@ $("settings-form").addEventListener("submit", async (e) => {
   for (const input of $("set-models").querySelectorAll("input[data-task]")) models[input.dataset.task] = input.value.trim();
   $("settings-save").disabled = true; $("settings-save").textContent = "Testing…";
   try {
-    await postJSON("/api/settings", { backend: $("set-backend").value, models, concurrency: parseInt($("set-conc").value, 10) });
+    await postJSON("/api/settings", { output_language: $("set-language").value, backend: $("set-backend").value, models, concurrency: parseInt($("set-conc").value, 10) });
     location.reload();  // every cache key and the pool size follow the new settings
   } catch (err) {
     $("settings-error").textContent = err.message; show($("settings-error"));
@@ -747,6 +756,7 @@ async function translateAll(force) {
   if (!S.aiConfig || !S.aiConfig.backend) return;
   if (!S.docId || !$("autotr").checked) return;
   const token = ++S.trToken;
+  const targetLanguage = lang();
   S.rateLimited = null; hide($("ai-banner"));
   const queue = [];   // pending {page, batch} tasks, in document order
   let produced = false;
@@ -773,7 +783,7 @@ async function translateAll(force) {
       }
       const t = queue.shift();
       if (S.rateLimited === token) { fillSource(t.page, t.batch, token); continue; }  // no more requests
-      await translateBatch(t.page, t.batch, force, token);
+      await translateBatch(t.page, t.batch, force, token, targetLanguage);
     }
   }
   await Promise.all(Array.from({ length: trPool() }, worker));
@@ -885,10 +895,10 @@ function buildTrShells() {
 
 // Stream a translation for one batch of segment texts, calling write(pageGlobalIndex, text) for
 // each result. The server numbers results from 0 within the batch, so we add the batch's start.
-async function streamTranslate(page, offset, texts, force, write) {
+async function streamTranslate(page, offset, texts, force, write, targetLanguage) {
   const res = await fetch("/api/translate_stream", {
     method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ doc_id: S.docId, page, target_lang: lang(), segments: texts, force: !!force }),
+    body: JSON.stringify({ doc_id: S.docId, page, target_lang: targetLanguage, segments: texts, force: !!force }),
   });
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
@@ -1020,11 +1030,11 @@ function fillSource(page, b, token) {
   paintFrontier();
 }
 
-async function translateBatch(page, b, force, token) {
+async function translateBatch(page, b, force, token, targetLanguage) {
   const P = S.pages[page];
   if (!P) return;
   const end = b.start + b.texts.length;
-  // A retranslate (lang/model change) bumps S.trToken and nulls P.trBuf; guard every buffer touch
+  // A retranslate bumps S.trToken and nulls P.trBuf; guard every buffer touch
   // so a lingering old-run worker can't throw on a null buffer or paint stale text into a new run.
   const live = () => token === S.trToken && P.trBuf;
   const write = (k, tr) => { if (!live()) return; P.trBuf[k] = tr; paintFrontier(); };
@@ -1035,7 +1045,7 @@ async function translateBatch(page, b, force, token) {
   for (let attempt = 0; attempt < 3; attempt++) {
     if (!live() || S.rateLimited === token) break;
     try {
-      await streamTranslate(page, b.start, b.texts, force || attempt > 0, write);
+      await streamTranslate(page, b.start, b.texts, force || attempt > 0, write, targetLanguage);
     } catch (err) {
       if (err instanceof RateLimited) { S.rateLimited = token; showRateLimit(); break; }
     }
@@ -1258,9 +1268,8 @@ function scrollTrTo(t, mid) {
   list.scrollTo({ top: Math.max(0, Math.min(max, list.scrollTop + (tb.top - y) / trScale)), behavior: "instant" });
 }
 
-// Auto-translate toggle / lang / model changes -> re-run the whole-document translation
+// Auto-translate toggle and explicit retranslation. Settings changes reload the page.
 $("autotr").addEventListener("change", () => { if ($("autotr").checked) translateAll(); });
-$("lang").addEventListener("change", () => retranslateAll());
 $("retranslate").addEventListener("click", () => retranslateAll(true));
 
 // Translation panel text-size control (dynamic, persisted)
@@ -1366,7 +1375,7 @@ async function loadAnatomy(force) {
   const box = $("anatomy");
   box.innerHTML = '<p class="loading" style="padding:6px">Analyzing structure… (grounded in the source, ~10-30s)</p>';
   try {
-    const d = await postJSON("/api/anatomy", { doc_id: S.docId, force: !!force });
+    const d = await postJSON("/api/anatomy", { output_language: lang(), doc_id: S.docId, force: !!force });
     renderAnatomy(d); S.anatomyLoaded = true;
   } catch (err) {
     box.innerHTML = '<p class="loading" style="padding:6px">Error: ' + err.message + "</p>";
@@ -1454,7 +1463,7 @@ async function genSummary() {
   S.summaryLoaded = true;
   $("summary").innerHTML = '<p class="loading">Summarizing… (first run can take a bit)</p>';
   try {
-    const r = await postJSON("/api/summarize", { doc_id: S.docId });
+    const r = await postJSON("/api/summarize", { output_language: lang(), doc_id: S.docId });
     $("summary").innerHTML = mdMath(r.summary);
     renderMath($("summary"));
   } catch (err) {
@@ -1481,7 +1490,7 @@ $("export-review").addEventListener("click", async () => {
   const btn = $("export-review"), label = btn.textContent;
   btn.disabled = true; btn.textContent = "생성 중…";
   try {
-    const res = await fetch(`/api/review/${S.docId}`, { method: "POST" });
+    const res = await fetch(`/api/review/${S.docId}?output_language=${encodeURIComponent(lang())}`, { method: "POST" });
     if (!res.ok) {
       const d = await res.json().catch(() => ({}));
       if (d.rate_limited) showRateLimit();
@@ -1564,7 +1573,7 @@ $("chatform").addEventListener("submit", async (e) => {
     ? `논문의 다음 부분에 대한 질문입니다:\n"${cite}"\n\n${q || "이 부분을 설명해줘."}`
     : q;
   try {
-    const r = await postJSON("/api/chat", { doc_id: S.docId, question });
+    const r = await postJSON("/api/chat", { output_language: lang(), doc_id: S.docId, question });
     bot.innerHTML = mdMath(r.answer);
     renderMath(bot);
   } catch (err) { bot.textContent = "Error: " + err.message; }

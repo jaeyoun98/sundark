@@ -115,6 +115,84 @@ class ApiTests(unittest.TestCase):
         )  # chat=opus override, everything else sonnet
         self.assertEqual(settings.load()["backend"], "claude")
 
+    def test_chatgpt_language_save_requires_validation_for_current_account(self):
+        settings.save("chatgpt", {}, 8, "Korean")
+        payload = {"backend": "chatgpt", "output_language": "Japanese"}
+        with (
+            patch(
+                "app.main.chatgpt_auth.validation_identity",
+                return_value="account-a:0:0",
+            ),
+            patch("app.main.ai.probe", new=AsyncMock()) as probe,
+        ):
+            self.assertEqual(
+                self.client.post("/api/settings", json=payload).status_code, 200
+            )
+            self.assertEqual(probe.await_count, 2)
+            self.assertEqual(
+                settings.load()["validated_chatgpt_identity"], "account-a:0:0"
+            )
+            probe.reset_mock()
+            payload["output_language"] = "French"
+            self.assertEqual(
+                self.client.post("/api/settings", json=payload).status_code, 200
+            )
+            probe.assert_not_awaited()
+
+        # Selecting or connecting another account changes the active identity,
+        # even when its selected model strings remain identical.
+        with (
+            patch(
+                "app.main.chatgpt_auth.validation_identity",
+                return_value="account-b:1:0",
+            ),
+            patch(
+                "app.main.ai.probe",
+                new=AsyncMock(side_effect=ModelUnavailableError("Unavailable")),
+            ) as probe,
+        ):
+            for language in ("French", "German"):
+                payload["output_language"] = language
+                self.assertEqual(
+                    self.client.post("/api/settings", json=payload).status_code, 400
+                )
+            self.assertEqual(probe.await_count, 2)
+        self.assertEqual(settings.load()["output_language"], "French")
+        self.assertEqual(settings.load()["validated_chatgpt_identity"], "account-a:0:0")
+
+    def test_chatgpt_reconnect_invalidates_model_validation(self):
+        settings.save("chatgpt", {}, 8, validated_chatgpt_identity="account-a:0:0")
+        with (
+            patch(
+                "app.main.chatgpt_auth.validation_identity",
+                return_value="account-a:0:1",
+            ),
+            patch("app.main.ai.probe", new=AsyncMock()) as probe,
+        ):
+            response = self.client.post(
+                "/api/settings",
+                json={"backend": "chatgpt", "output_language": "English"},
+            )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(probe.await_count, 2)
+        self.assertEqual(settings.load()["validated_chatgpt_identity"], "account-a:0:1")
+
+    def test_chatgpt_account_change_during_probe_cannot_save_validation(self):
+        before = settings.load()
+        with (
+            patch(
+                "app.main.chatgpt_auth.validation_identity",
+                side_effect=["account-a:0:0", "account-a:2:0"],
+            ),
+            patch("app.main.ai.probe", new=AsyncMock()),
+        ):
+            response = self.client.post(
+                "/api/settings",
+                json={"backend": "chatgpt", "output_language": "English"},
+            )
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(settings.load(), before)
+
     def test_cache_keys_differ_per_backend(self):
         with patch("app.main.ai.summarize", new=AsyncMock(return_value="S")):
             self.client.post("/api/summarize", json={"doc_id": "d"})
@@ -122,7 +200,11 @@ class ApiTests(unittest.TestCase):
             self.client.post("/api/summarize", json={"doc_id": "d"})
         names = sorted(p.name for p in (store.CACHE / "d").iterdir())
         self.assertEqual(
-            names, ["summary_claude-sonnet.json", "summary_hermes-gpt-6.1-sol.json"]
+            names,
+            [
+                "summary_Korean_claude-sonnet.json",
+                "summary_Korean_hermes-gpt-6.1-sol.json",
+            ],
         )
 
     def test_chat_history_survives_backend_switch(self):

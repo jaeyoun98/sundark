@@ -41,7 +41,7 @@ _TRANSLATE_SYS = (
 
 _CHAT_SYS = (
     "You are a research assistant who has carefully read the paper provided below. "
-    "Understand and analyze it, and answer the user's questions in Korean, grounded in "
+    "Understand and analyze it, and answer the user's questions in the requested output language, grounded in "
     "the paper — you may explain, summarize, compare, and reason about its content and "
     "methods. Preserve technical terms; render math as LaTeX in \\( ... \\). If something "
     "is genuinely not in the paper, say so briefly. " + _NO_TOOLS
@@ -176,7 +176,7 @@ def model(task: str) -> str:
 # Bump a task's revision when its prompt changes what a cached result should look like, so
 # results written under the old prompt are not reused. (translate r2: one fixed register, and
 # field terms kept in their original letters. brief r2: no coined renderings of such terms.)
-_PROMPT_REV = {"translate": "r2", "brief": "r2"}
+_PROMPT_REV = {"translate": "r2", "brief": "r3"}
 
 
 def cache_tag(task: str) -> str:
@@ -229,15 +229,23 @@ async def probe(backend: str, model_id: str) -> None:
     await backends.get(backend).run("Reply with: ok", model=model_id, system=None)
 
 
-async def summarize(paper_text: str) -> str:
-    prompt = (
-        "Summarize the academic paper below. Use this exact markdown structure:\n\n"
-        "## TL;DR\n(2-3 sentences)\n\n"
-        "## Key Contributions\n(bullet points)\n\n"
-        "## Method\n\n## Results\n\n## Limitations\n\n"
-        "Be concise and precise. Write in English.\n\n" + _paper(paper_text)
+def _language(target_lang: str) -> str:
+    settings.output_language(target_lang)
+    return (
+        f"\nWrite all generated prose and headings in {target_lang}, regardless of the "
+        "language of the question, history, or source materials. Preserve schema keys, "
+        "verbatim source quotes, proper names, established technical terms, and math."
     )
-    return await _run("summary", prompt, _SUMMARY_SYS)
+
+
+async def summarize(paper_text: str, target_lang: str = "Korean") -> str:
+    prompt = (
+        "Summarize the academic paper below. Use markdown sections for a short overview "
+        "(2-3 sentences), key contributions (bullet points), method, results, and limitations, "
+        "in that order. Localize every heading into the requested output language.\n\n"
+        "Be concise and precise.\n\n" + _paper(paper_text)
+    )
+    return await _run("summary", prompt, _SUMMARY_SYS + _language(target_lang))
 
 
 async def translate(text: str, target_lang: str) -> str:
@@ -249,12 +257,12 @@ async def translate(text: str, target_lang: str) -> str:
     return await _run("translate", prompt, _TRANSLATE_SYS)
 
 
-async def explain(selection: str) -> str:
+async def explain(selection: str, target_lang: str = "Korean") -> str:
     prompt = (
         "Explain the following excerpt from a research paper in simple, precise terms "
         "(2-5 sentences). Define any jargon.\n\n---\n" + selection
     )
-    return await _run("explain", prompt, _EXPLAIN_SYS)
+    return await _run("explain", prompt, _EXPLAIN_SYS + _language(target_lang))
 
 
 async def translate_brief(front_matter: str, target_lang: str) -> str:
@@ -272,7 +280,7 @@ async def translate_brief(front_matter: str, target_lang: str) -> str:
         f"a term.\n"
         f"Keep it short. No commentary, no markdown.\n\n" + _paper(front_matter)
     )
-    return (await _run("brief", prompt, _BRIEF_SYS)).strip()
+    return (await _run("brief", prompt, _BRIEF_SYS + _language(target_lang))).strip()
 
 
 async def translate_segments(
@@ -435,7 +443,9 @@ async def equation_latex(png: bytes) -> str:
 _MAX_TURNS = 20
 
 
-async def chat(question: str, *, paper_text: str, history: list[dict]) -> str:
+async def chat(
+    question: str, *, paper_text: str, history: list[dict], target_lang: str = "Korean"
+) -> str:
     """Stateless Q&A: every call carries the paper and the recent transcript, so the same
     Chat History continues on any AI Backend."""
     turns = "\n\n".join(
@@ -449,14 +459,14 @@ async def chat(question: str, *, paper_text: str, history: list[dict]) -> str:
         + (f"\n\nCONVERSATION SO FAR:\n{turns}" if turns else "")
         + f"\n\nQUESTION: {question}"
     )
-    return await _run("chat", prompt, _CHAT_SYS)
+    return await _run("chat", prompt, _CHAT_SYS + _language(target_lang))
 
 
-async def anatomy(paper_text: str) -> dict:
+async def anatomy(paper_text: str, target_lang: str = "Korean") -> dict:
     prompt = (
         "Analyze the paper below into a 'Research Anatomy'. Return ONLY JSON matching "
         "this shape (no prose, no markdown fences):\n" + _ANATOMY_SCHEMA + "\n\n"
-        "Rules: write point text in Korean but keep technical terms/metrics in their "
+        "Rules: write point text in the requested output language but keep technical terms/metrics in their "
         "source language. Each point makes ONE atomic claim. Label kind as author_stated "
         "(the paper states it), synthesis (combines multiple parts), or ai_interpretation. "
         "`quote` must be a short VERBATIM span copied from the paper that supports the "
@@ -464,7 +474,7 @@ async def anatomy(paper_text: str) -> dict:
         "points list. Never invent numbers, datasets, baselines, ablations, or limitations.\n\n"
         + _paper(paper_text)
     )
-    text = await _run("anatomy", prompt, _ANATOMY_SYS)
+    text = await _run("anatomy", prompt, _ANATOMY_SYS + _language(target_lang))
     obj = _parse_json_object(text)
     if obj is None:
         repair = (
@@ -472,7 +482,9 @@ async def anatomy(paper_text: str) -> dict:
             "matching this shape, nothing else:\n" + _ANATOMY_SCHEMA + "\n\n"
             "Previous output:\n" + text[:6000]
         )
-        obj = _parse_json_object(await _run("anatomy", repair, _ANATOMY_SYS))
+        obj = _parse_json_object(
+            await _run("anatomy", repair, _ANATOMY_SYS + _language(target_lang))
+        )
     if obj is None:
         raise AIError("Could not parse anatomy JSON")
     return obj
@@ -500,6 +512,59 @@ _REVIEW_SYS = (
 )
 
 
+REVIEW_HEADINGS = {
+    "Korean": (
+        "세 줄 요약",
+        "배경과 문제",
+        "핵심 기여",
+        "방법",
+        "실험 결과",
+        "한계와 의문",
+    ),
+    "English": (
+        "Three-line summary",
+        "Background and problem",
+        "Key contributions",
+        "Method",
+        "Experimental results",
+        "Limitations and questions",
+    ),
+    "Japanese": (
+        "三行要約",
+        "背景と課題",
+        "主な貢献",
+        "手法",
+        "実験結果",
+        "限界と疑問",
+    ),
+    "Chinese": ("三行摘要", "背景与问题", "核心贡献", "方法", "实验结果", "局限与疑问"),
+    "Spanish": (
+        "Resumen en tres líneas",
+        "Contexto y problema",
+        "Contribuciones clave",
+        "Método",
+        "Resultados experimentales",
+        "Limitaciones y preguntas",
+    ),
+    "French": (
+        "Résumé en trois lignes",
+        "Contexte et problème",
+        "Contributions principales",
+        "Méthode",
+        "Résultats expérimentaux",
+        "Limites et questions",
+    ),
+    "German": (
+        "Zusammenfassung in drei Zeilen",
+        "Hintergrund und Problem",
+        "Wesentliche Beiträge",
+        "Methode",
+        "Experimentelle Ergebnisse",
+        "Grenzen und Fragen",
+    ),
+}
+
+
 _REVIEW_SCHEMA = (
     '{"title":str,"paper_title":str,"authors":[str],"venue":str,"year":int|null,'
     '"tags":[str],"summary":str,"body":str}'
@@ -514,8 +579,9 @@ async def review(
     figures: list[dict],
     paper_text: str,
     glossary: str = "",
+    target_lang: str = "Korean",
 ) -> dict:
-    """Synthesize a Korean review note from the paper itself, guided by the materials already
+    """Synthesize a review note in the requested output language from the paper itself, guided by the materials already
     gathered for it (summary, anatomy, chat). Returns frontmatter fields plus a markdown `body`.
     Figures may be referenced ONLY by the ids in `figures` (each {id, caption}); the caller
     crops exactly the ids the body links to."""
@@ -638,7 +704,48 @@ async def review(
         f"<glossary>\n{glossary.strip() or '(none)'}\n</glossary>\n\n"
         + _paper(paper_text)
     )
-    text = await _run("review", prompt, _REVIEW_SYS)
+    system = _REVIEW_SYS
+    if target_lang != "Korean":
+        # Keep the Korean memo contract intact; other languages get the same semantic
+        # sections without Korean-specific grammar, terminology, or heading examples.
+        prompt, materials = prompt.split("<summary>\n", 1)
+        start = prompt.index("TERMS (")
+        end = prompt.index("READABILITY:", start)
+        prompt = (
+            prompt[:start]
+            + (
+                "TERMS: use established terminology in the output language consistently. "
+                "Keep method, model, dataset and metric names as written.\n\n"
+            )
+            + prompt[end:]
+        )
+        prompt = prompt.replace(
+            "markdown in Korean, memo style (see the system rules)",
+            "markdown in the requested output language, concise memo style",
+        )
+        prompt = prompt.replace("one Korean line", "one line in the output language")
+        headings = REVIEW_HEADINGS[target_lang]
+        for original, localized in zip(REVIEW_HEADINGS["Korean"], headings):
+            prompt = prompt.replace(original, localized)
+        prompt = prompt.replace(
+            "'> - 문제: ...', '> - 해결: ...', '> - 결과: ...'",
+            "three localized problem / solution / result bullets",
+        )
+        prompt = prompt.replace("'설정:'", "a localized 'Setup:' label")
+        prompt = prompt.replace(
+            "no '(채팅에서)', '채팅에서 나온', '요약에 따르면', 'anatomy'",
+            "no source-attribution labels",
+        )
+        prompt += "<summary>\n" + materials
+        system = (
+            "Write a grounded personal paper-review memo in one concise, natural register. "
+            "Help the reader recall why the paper exists, how its core idea works, the "
+            "headline evidence and consequential limits months later. Omit standard "
+            "background, secondary experiments and implementation hyperparameters. "
+            + _NO_TOOLS
+        )
+    system += _language(target_lang)
+    text = await _run("review", prompt, system)
     obj = _parse_json_object(text)
     if obj is None:
         repair = (
@@ -646,7 +753,7 @@ async def review(
             "this shape, nothing else:\n" + _REVIEW_SCHEMA + "\n\n"
             "Previous output:\n" + text[:6000]
         )
-        obj = _parse_json_object(await _run("review", repair, _REVIEW_SYS))
+        obj = _parse_json_object(await _run("review", repair, system))
     if obj is None or not isinstance(obj.get("body"), str):
         raise AIError("Could not parse review JSON")
     obj["body"] = _undouble_tex(obj["body"])

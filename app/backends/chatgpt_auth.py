@@ -141,6 +141,17 @@ async def _locked():
             raise AIError("Could not access ChatGPT connection settings") from exc
 
 
+def validation_identity() -> str | None:
+    """Non-secret provenance for model checks, invalidated by account changes."""
+    data = _read()
+    account = data.get("active")
+    if account is None:
+        return None
+    return (
+        f"{account}:{data.get('generation', 0)}:{data.get('validation_generation', 0)}"
+    )
+
+
 def status() -> dict:
     data = _read()
     active = data["accounts"].get(data.get("active"), {})
@@ -445,6 +456,7 @@ async def complete(
                 raise AIError("ChatGPT registration identity did not match")
             data["accounts"][issued] = record
             data["active"] = issued
+            data["validation_generation"] = data.get("validation_generation", 0) + 1
             _save(data)
     except BaseException:
         await _revoke(response.get("refresh_token"), issued)

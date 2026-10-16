@@ -24,6 +24,9 @@ class FrontendTests(unittest.TestCase):
     def test_rate_limit_drains_queued_batches_with_source(self):
         self.node("tests/frontend_ratelimit_queue.test.js")
 
+    def test_output_language_settings_and_run_snapshot(self):
+        self.node("tests/frontend_output_language.test.js")
+
     def test_markdown_keeps_latex_for_katex(self):
         self.node("tests/frontend_markdown_math.test.js")
 

@@ -89,6 +89,7 @@ class ChatGPTAccountTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_add_select_and_selectively_logout_accounts(self):
         await self.add_account("first")
+        first_identity = auth.validation_identity()
         status = await self.add_account("second")
 
         self.assertEqual(self.account_requests, ["first", "second"])
@@ -100,6 +101,7 @@ class ChatGPTAccountTests(unittest.IsolatedAsyncioTestCase):
 
         selected = await auth.select("first")
         self.assertEqual(selected["active"], "first")
+        self.assertNotEqual(auth.validation_identity(), first_identity)
         self.assertEqual(
             await auth.models(),
             [{"slug": "model-first", "display_name": "Model first"}],

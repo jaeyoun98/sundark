@@ -11,6 +11,27 @@ from pathlib import Path
 
 from .store import DATA
 
+OUTPUT_LANGUAGES = (
+    "Korean",
+    "English",
+    "Japanese",
+    "Chinese",
+    "Spanish",
+    "French",
+    "German",
+)
+DEFAULT_OUTPUT_LANGUAGE = "Korean"
+
+
+def output_language(value: str | None = None) -> str:
+    """Validate a request choice, or snapshot the saved output language."""
+    if value is None:
+        return load()["output_language"]
+    if value not in OUTPUT_LANGUAGES:
+        raise ValueError(f"Unknown output language: {value}")
+    return value
+
+
 BACKEND_NAMES = ("claude", "hermes", "chatgpt")
 TASKS = (
     "translate",
@@ -78,7 +99,17 @@ def load() -> dict:
             if isinstance(n, int)
             else DEFAULT_CONCURRENCY
         )
-    return {"backend": backend, "models": models, "concurrency": concurrency}
+    return {
+        "backend": backend,
+        "models": models,
+        "concurrency": concurrency,
+        "validated_chatgpt_identity": raw.get("validated_chatgpt_identity")
+        if isinstance(raw.get("validated_chatgpt_identity"), str)
+        else None,
+        "output_language": raw.get("output_language")
+        if raw.get("output_language") in OUTPUT_LANGUAGES
+        else DEFAULT_OUTPUT_LANGUAGE,
+    }
 
 
 def model_for(settings: dict, backend: str, task: str) -> str:
@@ -104,13 +135,26 @@ def validate(backend: str, models: dict[str, str], concurrency: int) -> None:
         raise ValueError(f"Concurrency must be 1-{MAX_CONCURRENCY}")
 
 
-def save(backend: str, models: dict[str, str], concurrency: int) -> None:
+def save(
+    backend: str,
+    models: dict[str, str],
+    concurrency: int,
+    output_language: str | None = None,
+    *,
+    validated_chatgpt_identity: str | None = None,
+) -> None:
     validate(backend, models, concurrency)
+    if output_language is not None and output_language not in OUTPUT_LANGUAGES:
+        raise ValueError(f"Unknown output language: {output_language}")
     current = load()
     raw = {
+        "output_language": output_language or current["output_language"],
         "backend": backend,
         "models": current["models"],
         "concurrency": current["concurrency"],
+        "validated_chatgpt_identity": validated_chatgpt_identity
+        if backend == "chatgpt"
+        else current["validated_chatgpt_identity"],
     }
     raw["models"][backend] = {**current["models"][backend], **models}
     raw["concurrency"][backend] = concurrency
