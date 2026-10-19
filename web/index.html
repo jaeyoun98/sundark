@@ -24,12 +24,6 @@
     <label class="toggle" title="Translate pages automatically as you scroll">
       <input id="autotr" type="checkbox" checked /> Auto-translate
     </label>
-    <label class="ctl">Lang
-      <select id="lang">
-        <option>Korean</option><option>English</option><option>Japanese</option>
-        <option>Chinese</option><option>Spanish</option><option>French</option><option>German</option>
-      </select>
-    </label>
     <button id="ai-badge" class="btn-ghost" type="button" title="AI settings">AI: …</button>
   </header>
 
@@ -55,6 +49,8 @@
       </section>
       <div id="set-models"></div>
       <p id="chatgpt-save-hint" class="hint hidden">Save tests the selected models before applying these settings.</p>
+      <label>Output language <select id="set-language"></select></label>
+      <p class="hint">Applies to translation, summary, anatomy, explanations, chat, and review notes.</p>
       <label>Parallel requests <input id="set-conc" type="number" min="1" max="16" /></label>
       <p id="settings-error" class="settings-error hidden" role="alert"></p>
       <menu>
@@ -67,7 +63,15 @@
   <main class="workspace">
     <!-- Library -->
     <aside class="library">
-      <div class="lib-head"><span>Library</span><button id="refresh" title="Rescan folder">⟳</button></div>
+      <div class="lib-head"><span>Library</span><button id="refresh" title="Reload the list">⟳</button></div>
+      <div class="lib-src" role="tablist">
+        <button id="src-folder" type="button" class="active">Folder</button>
+        <button id="src-zotero" type="button">Zotero</button>
+      </div>
+      <div id="zot-controls" class="zot-controls hidden">
+        <select id="zot-coll" aria-label="Zotero collection"></select>
+        <input id="zot-q" type="search" placeholder="Search title, author, year…" autocomplete="off" />
+      </div>
       <div id="libdir" class="lib-dir"></div>
       <ul id="paperlist" class="paperlist"></ul>
     </aside>

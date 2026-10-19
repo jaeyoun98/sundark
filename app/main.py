@@ -27,7 +27,17 @@ from fastapi.responses import (
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, StrictBool
 
-from . import ai, backends, biblio, layout_model, paper_id, pdf_utils, settings, store
+from . import (
+    ai,
+    backends,
+    biblio,
+    layout_model,
+    paper_id,
+    pdf_utils,
+    settings,
+    store,
+    zotero,
+)
 from .backends import chatgpt_auth
 from .errors import AIError, RateLimitError
 
@@ -246,6 +256,57 @@ async def open_paper(req: OpenReq):
         raise HTTPException(400, f"Could not read PDF: {e}") from e
 
 
+# --- Zotero (read-only, through Zotero's local API) ---
+
+
+async def _zotero(fn, *args, **kwargs):
+    """Run a blocking Zotero call off the event loop; a down Zotero becomes HTTP 503."""
+    try:
+        return await asyncio.to_thread(fn, *args, **kwargs)
+    except zotero.ZoteroError as exc:
+        raise HTTPException(503, str(exc)) from exc
+
+
+@app.get("/api/zotero/status")
+async def zotero_status():
+    return {"available": await asyncio.to_thread(zotero.available)}
+
+
+@app.get("/api/zotero/collections")
+async def zotero_collections():
+    return {"collections": await _zotero(zotero.collections)}
+
+
+@app.get("/api/zotero/items")
+async def zotero_items(
+    collection: str | None = None, q: str | None = None, start: int = 0
+):
+    return await _zotero(zotero.items, collection=collection, q=q, start=start)
+
+
+class ZoteroOpenReq(BaseModel):
+    item: str
+    attachment: str
+
+
+@app.post("/api/zotero/open")
+async def zotero_open(req: ZoteroOpenReq):
+    """Open a Zotero PDF where it is (no copy into papers/); Zotero's DOI and item key feed
+    the Paper ID (ADR 0001)."""
+    path = await _zotero(zotero.pdf_path, req.attachment)
+    doi = await _zotero(zotero.item_doi, req.item)
+    if not path.is_file() or path.suffix.lower() != ".pdf":
+        raise HTTPException(404, "The PDF file for this Zotero item was not found")
+    try:
+        return _schedule_prewarm(
+            await _ingest(path.read_bytes(), {"key": req.item, "doi": doi})
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(400, f"Could not read PDF: {e}") from e
+
+
 # Layout (which now runs the YOLO model) is heavy and synchronous. Run it one page at a time
 # so the CPU is not thrashed by parallel inference, and always off the event loop (via a
 # thread) so one page's layout never blocks the server from serving the PDF or other requests.
@@ -276,8 +337,10 @@ _layout_lock = asyncio.Lock()
 # page's text; running heads match by
 # letters; page 0 cuts at a real Abstract heading and keeps a caption above it; only the
 # reference list is skipped, from a whole-line References heading to an appendix heading or
-# the first page that is not a reference list.)
-_LAYOUT_VERSION = 10
+# the first page that is not a reference list. v11: attach a lone equation number "(1)"
+# to the display equation beside it (as the sentence's "eqno") instead of dropping it as a
+# short fragment.)
+_LAYOUT_VERSION = 11
 
 
 def _page_layout_cached(doc_id: str, page: int) -> dict:
@@ -385,6 +448,10 @@ async def math(doc_id: str, page: int):
     key = f"math_v{_LAYOUT_VERSION}_{ai.cache_tag('equation')}_{page}"
     cached = store.cache_get(doc_id, key)
     if cached:
+        # Drop transcriptions cached before latex_ok() existed that KaTeX cannot render.
+        cached["equations"] = [
+            e for e in cached.get("equations", []) if ai.latex_ok(e.get("latex", ""))
+        ]
         return cached
     lay = await _layout_async(doc_id, page)
     pdf_bytes = store.pdf_path(doc_id).read_bytes()
@@ -460,19 +527,28 @@ async def upload(file: UploadFile):
     return _schedule_prewarm(meta)
 
 
+def _output_language(value: str | None = None) -> str:
+    try:
+        return settings.output_language(value)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
 class SummarizeReq(BaseModel):
     doc_id: str
+    output_language: str | None = None
 
 
 @app.post("/api/summarize")
 async def summarize(req: SummarizeReq):
+    language = _output_language(req.output_language)
     doc = _require_doc(req.doc_id)
-    key = f"summary_{ai.cache_tag('summary')}"
+    key = f"summary_{language}_{ai.cache_tag('summary')}"
     cached = store.cache_get(req.doc_id, key)
     if cached:
         return cached
     text = pdf_utils.full_text(doc["pages"])
-    summary = await ai.summarize(text)
+    summary = await ai.summarize(text, target_lang=language)
     result = {"summary": summary}
     store.cache_put(req.doc_id, key, result)
     return result
@@ -480,6 +556,7 @@ async def summarize(req: SummarizeReq):
 
 class AnatomyReq(BaseModel):
     doc_id: str
+    output_language: str | None = None
     force: bool = False
 
 
@@ -494,8 +571,9 @@ def _verify_card_quotes(card: dict, paper_text: str) -> None:
 
 @app.post("/api/anatomy")
 async def anatomy(req: AnatomyReq):
+    language = _output_language(req.output_language)
     doc = _require_doc(req.doc_id)
-    key = f"anatomy_{ai.cache_tag('anatomy')}"
+    key = f"anatomy_{language}_{ai.cache_tag('anatomy')}"
     if not req.force:
         cached = store.cache_get(req.doc_id, key)
         if cached:
@@ -503,7 +581,7 @@ async def anatomy(req: AnatomyReq):
 
     text = pdf_utils.full_text(doc["pages"])
     try:
-        result = await ai.anatomy(text)
+        result = await ai.anatomy(text, target_lang=language)
     except RateLimitError:
         raise
     except AIError as e:
@@ -520,7 +598,7 @@ async def anatomy(req: AnatomyReq):
 
 
 # --- Review export -------------------------------------------------------------------------
-# A one-click review note: write a Korean review from the paper text, guided by the materials
+# A one-click review note: write a review from the paper text, guided by the materials
 # already gathered for it (summary + anatomy + chat), crop only the figures the note references,
 # and hand back a Hugo page bundle (<slug>/index.md + <slug>/<id>.png) as a zip.
 
@@ -588,8 +666,9 @@ def _frontmatter(rv: dict, *, date: str, has_math: bool) -> str:
 
 
 @app.post("/api/review/{doc_id}")
-async def review_export(doc_id: str):
+async def review_export(doc_id: str, output_language: str | None = None):
     """Generate the review note and return it as a zipped Hugo page bundle."""
+    language = _output_language(output_language)
     doc = _require_doc(doc_id)
     pages = doc["pages"]
     text = pdf_utils.full_text(pages)
@@ -597,22 +676,22 @@ async def review_export(doc_id: str):
     # Materials: summary and anatomy are generated (and cached) on demand if not present yet.
     # A single material failing (e.g. anatomy returns unparseable JSON) must not sink the whole
     # export — the review can still be written from the rest. A rate limit still propagates.
-    skey = f"summary_{ai.cache_tag('summary')}"
+    skey = f"summary_{language}_{ai.cache_tag('summary')}"
     summ = store.cache_get(doc_id, skey)
     if summ is None:
         try:
-            summ = {"summary": await ai.summarize(text)}
+            summ = {"summary": await ai.summarize(text, target_lang=language)}
             store.cache_put(doc_id, skey, summ)
         except RateLimitError:
             raise
         except AIError:
             summ = {"summary": ""}
 
-    akey = f"anatomy_{ai.cache_tag('anatomy')}"
+    akey = f"anatomy_{language}_{ai.cache_tag('anatomy')}"
     anat = store.cache_get(doc_id, akey)
     if anat is None:
         try:
-            anat = await ai.anatomy(text)
+            anat = await ai.anatomy(text, target_lang=language)
             for name in ("problem", "gap", "claim", "method", "limitations"):
                 _verify_card_quotes(anat.get(name, {}), text)
             for sub in (anat.get("evidence") or {}).values():
@@ -624,7 +703,7 @@ async def review_export(doc_id: str):
             anat = {}
 
     chat_turns = store.chat_get(_paper_of(doc_id, doc))
-    glossary = await _get_brief(doc_id, doc, "Korean")
+    glossary = await _get_brief(doc_id, doc, language)
 
     # Figures + display-math presence (heavy: the layout model runs on every page).
     pdf_bytes = store.pdf_path(doc_id).read_bytes()
@@ -638,6 +717,7 @@ async def review_export(doc_id: str):
         figures=[{"id": f["id"], "caption": f["caption"]} for f in figures],
         paper_text=text,
         glossary=glossary,
+        target_lang=language,
     )
     body = rv.get("body", "")
 
@@ -686,7 +766,7 @@ async def review_export(doc_id: str):
 class TranslateReq(BaseModel):
     doc_id: str
     page: int  # 0-indexed
-    target_lang: str = "Korean"
+    target_lang: str | None = None
     segments: list[str] | None = (
         None  # client-supplied segments (from the PDF text layer)
     )
@@ -695,6 +775,7 @@ class TranslateReq(BaseModel):
 
 @app.post("/api/translate")
 async def translate(req: TranslateReq):
+    language = _output_language(req.target_lang)
     doc = _require_doc(req.doc_id)
     pages = doc["pages"]
     if not (0 <= req.page < len(pages)):
@@ -708,7 +789,7 @@ async def translate(req: TranslateReq):
     # Cache key includes a signature of the exact segments, so a change in how the
     # page is split (different count/content) never returns a mismatched cached result.
     sig = hashlib.sha1("\x1f".join(segs).encode("utf-8")).hexdigest()[:10]
-    key = f"tr_{req.target_lang}_{ai.cache_tag('translate')}_{req.page}_{sig}"
+    key = f"tr_{language}_{ai.cache_tag('translate')}_{req.page}_{sig}"
     cached = store.cache_get(req.doc_id, key)
     if cached:
         return cached
@@ -719,11 +800,11 @@ async def translate(req: TranslateReq):
         return result
 
     source = "\n\n".join(segs)
-    brief = await _get_brief(req.doc_id, doc, req.target_lang)
-    tr = await ai.translate_segments(segs, req.target_lang, brief=brief)
+    brief = await _get_brief(req.doc_id, doc, language)
+    tr = await ai.translate_segments(segs, language, brief=brief)
     if tr is None:
         # Alignment failed — fall back to one whole-page translation.
-        whole = await ai.translate(source, req.target_lang)
+        whole = await ai.translate(source, language)
         result = {"segments": [{"src": source, "tr": whole}], "translation": whole}
     else:
         pairs = [{"src": s, "tr": t} for s, t in zip(segs, tr)]
@@ -732,10 +813,23 @@ async def translate(req: TranslateReq):
     return result
 
 
+async def _retranslate(src: str, target_lang: str) -> str:
+    """One more single-sentence attempt for a sentence the model left mostly untranslated.
+    Returns the new translation, or "" if it failed or is still untranslated."""
+    try:
+        again = (await ai.translate(src, target_lang)).strip()
+    except RateLimitError:
+        raise
+    except AIError:
+        return ""
+    return again if again and not ai.untranslated(src, again, target_lang) else ""
+
+
 @app.post("/api/translate_stream")
 async def translate_stream(req: TranslateReq):
     """Progressive translation: streams one NDJSON line {"i":k,"tr":"..."} per segment
     as the model produces it, so sentences appear from the top instead of all at once."""
+    language = _output_language(req.target_lang)
     doc = _require_doc(req.doc_id)
     pages = doc["pages"]
     if not (0 <= req.page < len(pages)):
@@ -751,16 +845,42 @@ async def translate_stream(req: TranslateReq):
         else pdf_utils.segment(pages[req.page].strip())
     )
     sig = hashlib.sha1("\x1f".join(segs).encode("utf-8")).hexdigest()[:10]
-    key = f"tr_{req.target_lang}_{ai.cache_tag('translate')}_{req.page}_{sig}"
+    key = f"tr_{language}_{ai.cache_tag('translate')}_{req.page}_{sig}"
 
     async def gen():
         if not req.force:
             cached = store.cache_get(req.doc_id, key)
             if cached:
+                changed = False
                 for k, seg in enumerate(cached["segments"]):
+                    # Cached before the untranslated() check existed: fix it once, then
+                    # mark it so a sentence that stays English is not retried every open.
+                    if not seg.get("checked") and ai.untranslated(
+                        seg["src"], seg["tr"], language
+                    ):
+                        try:
+                            better = await _retranslate(seg["src"], language)
+                        except RateLimitError as exc:
+                            yield (
+                                json.dumps(
+                                    {"error": str(exc), "rate_limited": True},
+                                    ensure_ascii=False,
+                                )
+                                + "\n"
+                            )
+                            return
+                        else:
+                            seg["checked"], changed = True, True
+                        if better:
+                            seg["tr"] = better
                     yield (
                         json.dumps({"i": k, "tr": seg["tr"]}, ensure_ascii=False) + "\n"
                     )
+                if changed:
+                    cached["translation"] = "\n\n".join(
+                        x["tr"] for x in cached["segments"]
+                    )
+                    store.cache_put(req.doc_id, key, cached)
                 return
         if not segs:
             store.cache_put(req.doc_id, key, {"segments": [], "translation": ""})
@@ -770,26 +890,33 @@ async def translate_stream(req: TranslateReq):
         # printed index — and a misaligned stream errors out instead of being shown or cached. On
         # an AIError the client retries the batch and finally falls back to source text.
         collected: list[str] = []
+        held: list[int] = []  # sentences the model left mostly untranslated
         try:
-            brief = await _get_brief(req.doc_id, doc, req.target_lang)
-            chunks = ai.translate_stream(segs, req.target_lang, brief=brief)
+            brief = await _get_brief(req.doc_id, doc, language)
+            chunks = ai.translate_stream(segs, language, brief=brief)
             try:
                 async for tr in chunks:
-                    yield (
-                        json.dumps({"i": len(collected), "tr": tr}, ensure_ascii=False)
-                        + "\n"
-                    )
+                    k = len(collected)
                     collected.append(tr)
+                    if ai.untranslated(segs[k], tr, language):
+                        held.append(k)  # shown after a second, single-sentence attempt
+                        continue
+                    yield json.dumps({"i": k, "tr": tr}, ensure_ascii=False) + "\n"
             finally:
                 await chunks.aclose()
+            for k in held:
+                collected[k] = await _retranslate(segs[k], language) or collected[k]
+                yield (
+                    json.dumps({"i": k, "tr": collected[k]}, ensure_ascii=False) + "\n"
+                )
         except AIError as exc:
-            limited = isinstance(exc, RateLimitError)
             logging.getLogger(__name__).warning(
                 "Translation batch failed: page=%s kind=%s reason=%s",
                 req.page + 1,
                 type(exc).__name__,
                 str(exc),
             )
+            limited = isinstance(exc, RateLimitError)
             yield (
                 json.dumps(
                     {"error": str(exc), "rate_limited": limited}, ensure_ascii=False
@@ -811,31 +938,38 @@ async def translate_stream(req: TranslateReq):
 
 class ExplainReq(BaseModel):
     doc_id: str
+    output_language: str | None = None
     text: str
 
 
 @app.post("/api/explain")
 async def explain(req: ExplainReq):
+    language = _output_language(req.output_language)
     _require_doc(req.doc_id)
     text = req.text.strip()
     if not text:
         raise HTTPException(400, "No text selected")
-    answer = await ai.explain(text[:4000])
+    answer = await ai.explain(text[:4000], target_lang=language)
     return {"explanation": answer}
 
 
 class ChatReq(BaseModel):
     doc_id: str
+    output_language: str | None = None
     question: str
 
 
 @app.post("/api/chat")
 async def chat(req: ChatReq):
+    language = _output_language(req.output_language)
     doc = _require_doc(req.doc_id)
     pid = _paper_of(req.doc_id, doc)
     history = store.chat_get(pid)
     answer = await ai.chat(
-        req.question, paper_text=pdf_utils.full_text(doc["pages"]), history=history
+        req.question,
+        paper_text=pdf_utils.full_text(doc["pages"]),
+        history=history,
+        target_lang=language,
     )
     store.chat_put(
         pid,
@@ -888,14 +1022,15 @@ async def _get_brief(doc_id: str, doc: dict, target_lang: str) -> str:
 
 class BriefReq(BaseModel):
     doc_id: str
-    target_lang: str = "Korean"
+    target_lang: str | None = None
 
 
 @app.post("/api/brief")
 async def brief(req: BriefReq):
     """Warm (or return) the cached translation glossary for a paper."""
+    language = _output_language(req.target_lang)
     doc = _require_doc(req.doc_id)
-    return {"brief": await _get_brief(req.doc_id, doc, req.target_lang)}
+    return {"brief": await _get_brief(req.doc_id, doc, language)}
 
 
 async def _backend_rows() -> list[dict]:
@@ -961,32 +1096,55 @@ async def config():
         "tasks": list(settings.TASKS),
         "models": s["models"],
         "default_models": settings.DEFAULT_MODELS,
+        "output_language": s["output_language"],
+        "output_languages": list(settings.OUTPUT_LANGUAGES),
         "concurrency": s["concurrency"],
     }
 
 
 class SettingsReq(BaseModel):
     backend: str
+    output_language: str | None = None
     models: dict[str, str] = {}
     concurrency: int = settings.DEFAULT_CONCURRENCY
 
 
 @app.post("/api/settings")
 async def save_settings(req: SettingsReq):
+    language = _output_language(req.output_language)
     if req.backend not in backends.BACKENDS:
         raise HTTPException(400, f"Unknown AI Backend: {req.backend}")
     try:
         settings.validate(req.backend, req.models, req.concurrency)
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
-    merged = {**settings.load()["models"][req.backend], **req.models}
-    for model_id in sorted(set(merged.values())):
+    current = settings.load()
+    merged = {**current["models"][req.backend], **req.models}
+    account = chatgpt_auth.validation_identity() if req.backend == "chatgpt" else None
+    unchanged = (
+        current["backend"] == req.backend
+        and merged == current["models"][req.backend]
+        and (
+            req.backend != "chatgpt"
+            or account is not None
+            and account == current["validated_chatgpt_identity"]
+        )
+    )
+    for model_id in [] if unchanged else sorted(set(merged.values())):
         try:
             await ai.probe(req.backend, model_id)
         except AIError as exc:
             raise HTTPException(400, f"{model_id}: {exc}") from exc
+    if req.backend == "chatgpt" and chatgpt_auth.validation_identity() != account:
+        raise HTTPException(409, "ChatGPT account changed; save settings again")
     try:
-        settings.save(req.backend, req.models, req.concurrency)
+        settings.save(
+            req.backend,
+            req.models,
+            req.concurrency,
+            language,
+            validated_chatgpt_identity=account,
+        )
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
     return {"ok": True}

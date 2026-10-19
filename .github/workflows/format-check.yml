@@ -108,3 +108,34 @@ jobs:
           .venv/Scripts/python.exe -m unittest
           tests.test_backend_chatgpt tests.test_chatgpt_auth
           tests.test_chatgpt_accounts tests.test_chatgpt_concurrency -v
+
+  browser:
+    name: Check browser workflows
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+      - run: uv python install
+      - uses: pnpm/action-setup@v5
+        with:
+          version: '11'
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          cache: pnpm
+      - run: uv sync --locked
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm exec playwright install --with-deps chromium
+      - run: pnpm test:e2e
+      - name: Upload browser failure evidence
+        if: failure()
+        uses: actions/upload-artifact@v6
+        with:
+          name: browser-failure-evidence
+          path: test-results/
+          retention-days: 7

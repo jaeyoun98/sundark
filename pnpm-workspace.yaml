@@ -1,0 +1,3 @@
+# Browser PDF rendering does not need pdf.js's optional Node canvas addon.
+allowBuilds:
+  canvas: false

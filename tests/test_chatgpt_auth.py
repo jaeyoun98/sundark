@@ -105,6 +105,7 @@ class ChatGPTAuthTests(unittest.TestCase):
             assert done["ready"]
             assert requests[0][1]["data"]["client_id"] == "issued-client"
             assert done["accounts"][0]["account_id"] == "issued-client"
+            first_identity = auth.validation_identity()
             returning = await auth.begin(
                 "http://127.0.0.1:8743/api/chatgpt/callback", "issued-client"
             )
@@ -117,6 +118,13 @@ class ChatGPTAuthTests(unittest.TestCase):
                     "generated-code", returning["state"], "other-client"
                 )
             assert auth.status()["ready"]
+            reconnect = await auth.begin(
+                "http://127.0.0.1:8743/api/chatgpt/callback", "issued-client"
+            )
+            nonce = auth._PENDING[reconnect["state"]]["nonce"]
+            await auth.complete("generated-code", reconnect["state"], "issued-client")
+            assert auth.status()["active"] == "issued-client"
+            assert auth.validation_identity() != first_identity
 
         asyncio.run(scenario())
 

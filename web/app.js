@@ -4,7 +4,10 @@ pdfjsLib.GlobalWorkerOptions.workerSrc =
   "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
 
 const $ = (id) => document.getElementById(id);
-const lang = () => $("lang").value;
+const lang = () => {
+  if (!S.aiConfig) throw new Error("AI settings are unavailable. Reload to try again.");
+  return S.aiConfig.output_language;
+};
 
 const S = {
   docId: null,
@@ -241,6 +244,12 @@ function fillModels(backend) {
 
 function openSettings() {
   if (!S.aiConfig) return;
+  const languages = $("set-language");
+  languages.replaceChildren(...S.aiConfig.output_languages.map((language) => {
+    const option = document.createElement("option");
+    option.value = language; option.textContent = language; return option;
+  }));
+  languages.value = lang();
   const sel = $("set-backend");
   sel.innerHTML = "";
   for (const b of S.aiConfig.backends) {
@@ -269,7 +278,7 @@ $("settings-form").addEventListener("submit", async (e) => {
   for (const input of $("set-models").querySelectorAll("input[data-task]")) models[input.dataset.task] = input.value.trim();
   $("settings-save").disabled = true; $("settings-save").textContent = "Testing…";
   try {
-    await postJSON("/api/settings", { backend: $("set-backend").value, models, concurrency: parseInt($("set-conc").value, 10) });
+    await postJSON("/api/settings", { output_language: $("set-language").value, backend: $("set-backend").value, models, concurrency: parseInt($("set-conc").value, 10) });
     location.reload();  // every cache key and the pool size follow the new settings
   } catch (err) {
     $("settings-error").textContent = err.message; show($("settings-error"));
@@ -279,11 +288,150 @@ $("settings-form").addEventListener("submit", async (e) => {
 });
 
 // ================= Library =================
+// Two sources: the papers folder, or the user's Zotero library (read-only, via Zotero's local API).
+let libSource = "folder";
+try { libSource = localStorage.getItem("libSource") || "folder"; } catch {}
+
+function setLibSource(src) {
+  libSource = src;
+  try { localStorage.setItem("libSource", src); } catch {}
+  $("src-folder").classList.toggle("active", src === "folder");
+  $("src-zotero").classList.toggle("active", src === "zotero");
+  $("zot-controls").classList.toggle("hidden", src !== "zotero");
+  loadLibrary();
+}
+$("src-folder").addEventListener("click", () => setLibSource("folder"));
+$("src-zotero").addEventListener("click", () => setLibSource("zotero"));
+
+async function getJSON(url) {
+  const res = await fetch(url);
+  if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail || res.statusText);
+  return res.json();
+}
+
+// Flat Zotero collections (each with a parent key) -> picker options in tree order, indented.
+function zoteroCollectionOptions(cols) {
+  const keys = new Set(cols.map((c) => c.key));
+  const kids = new Map();
+  for (const c of cols) {
+    const parent = c.parent && keys.has(c.parent) ? c.parent : null;
+    if (!kids.has(parent)) kids.set(parent, []);
+    kids.get(parent).push(c);
+  }
+  const out = [];
+  const walk = (parent, depth) => {
+    const list = (kids.get(parent) || []).slice().sort((a, b) => a.name.localeCompare(b.name));
+    for (const c of list) {
+      out.push({ key: c.key, label: "\u00a0\u00a0".repeat(depth) + c.name + " (" + c.count + ")" });
+      walk(c.key, depth + 1);
+    }
+  };
+  walk(null, 0);
+  return out;
+}
+
+let zotCollectionsLoaded = false;
+// Each fresh listing (new query, collection, or source) gets a generation number; a reply that
+// arrives after a newer listing started, or after switching to Folder, is dropped.
+let zotGen = 0;
+let folderGen = 0;
+async function loadZotero(start = 0) {
+  const gen = start === 0 ? ++zotGen : zotGen;
+  const stale = () => gen !== zotGen || libSource !== "zotero";
+  const list = $("paperlist");
+  if (start === 0) list.innerHTML = '<li class="emptylib">Loading Zotero…</li>';
+  $("libdir").textContent = "Zotero · My Library";
+  try {
+    if (!zotCollectionsLoaded) {
+      const sel = $("zot-coll");
+      sel.innerHTML = '<option value="">All items</option>';
+      const cols = (await getJSON("/api/zotero/collections")).collections;
+      if (stale()) return;
+      for (const o of zoteroCollectionOptions(cols)) {
+        const opt = document.createElement("option");
+        opt.value = o.key; opt.textContent = o.label;
+        sel.appendChild(opt);
+      }
+      zotCollectionsLoaded = true;
+    }
+    const params = new URLSearchParams({ start: String(start) });
+    if ($("zot-coll").value) params.set("collection", $("zot-coll").value);
+    if ($("zot-q").value.trim()) params.set("q", $("zot-q").value.trim());
+    const r = await getJSON("/api/zotero/items?" + params);
+    if (stale()) return;
+    if (start === 0) list.innerHTML = "";
+    list.querySelector("li.more")?.remove();
+    for (const it of r.items) {
+      const who = it.authors.length > 2 ? it.authors[0] + " et al." : it.authors.join(", ");
+      const li = document.createElement("li");
+      li.innerHTML = `${esc(it.title)}<span class="meta">${esc([who, it.year].filter(Boolean).join(" · "))}</span>`;
+      if (!it.pdfs.length) {
+        li.classList.add("nopdf"); li.title = "No PDF attached in Zotero";
+      } else {
+        const button = document.createElement("button");
+        button.type = "button"; button.className = "paper-action";
+        button.innerHTML = li.innerHTML; li.innerHTML = "";
+        button.addEventListener("click", () => openFromZotero(it.key, it.pdfs[0].key, li));
+        li.appendChild(button);
+      }
+      list.appendChild(li);
+      for (const pdf of it.pdfs.slice(1)) {  // extra PDFs (e.g. supplementary material)
+        const sub = document.createElement("li");
+        sub.className = "sub";
+        const button = document.createElement("button");
+        button.type = "button"; button.className = "paper-action";
+        button.textContent = "↳ " + pdf.name;
+        button.addEventListener("click", () => openFromZotero(it.key, pdf.key, sub));
+        sub.appendChild(button);
+        list.appendChild(sub);
+      }
+    }
+    // "next" counts every Zotero entry read, including skipped notes and attachments.
+    const next = r.next ?? start + r.items.length;
+    if (next < r.total) {
+      const more = document.createElement("li");
+      more.className = "more";
+      const button = document.createElement("button");
+      button.type = "button"; button.className = "paper-action";
+      button.textContent = `Load more (${next}/${r.total})`;
+      button.addEventListener("click", () => {
+        if (button.disabled) return;
+        button.disabled = true;
+        loadZotero(next);
+      });
+      more.appendChild(button);
+      list.appendChild(more);
+    } else if (!list.children.length) {
+      list.innerHTML = '<li class="emptylib">No matching Zotero items.</li>';
+    }
+  } catch (err) {
+    if (stale()) return;
+    list.innerHTML = '<li class="emptylib">' + esc(err.message) + "</li>";
+    zotCollectionsLoaded = false;
+  }
+}
+$("zot-coll").addEventListener("change", () => loadZotero());
+let zotSearchT;
+$("zot-q").addEventListener("input", () => { clearTimeout(zotSearchT); zotSearchT = setTimeout(() => loadZotero(), 300); });
+
+async function openFromZotero(item, attachment, li) {
+  document.querySelectorAll(".paperlist li").forEach((x) => x.classList.remove("active"));
+  if (li) li.classList.add("active");
+  setTitle("Opening…");
+  try {
+    await openDoc(await postJSON("/api/zotero/open", { item, attachment }));
+  } catch (err) { setTitle("Open failed: " + err.message); }
+}
+
 async function loadLibrary() {
+  if (libSource === "zotero") return loadZotero();
+  const gen = ++folderGen;
+  const stale = () => gen !== folderGen || libSource !== "folder";
   const list = $("paperlist");
   list.innerHTML = '<li class="emptylib">Loading…</li>';
   try {
     const r = await fetch("/api/papers").then((x) => x.json());
+    if (stale()) return;
     $("libdir").textContent = r.dir;
     if (!r.papers.length) {
       list.innerHTML = '<li class="emptylib">No PDFs here yet.<br>Drop .pdf files in the folder, then ⟳.</li>';
@@ -297,10 +445,11 @@ async function loadLibrary() {
       list.appendChild(li);
     }
   } catch (err) {
+    if (stale()) return;
     list.innerHTML = '<li class="emptylib">Error: ' + err.message + "</li>";
   }
 }
-$("refresh").addEventListener("click", loadLibrary);
+$("refresh").addEventListener("click", () => { zotCollectionsLoaded = false; loadLibrary(); });
 
 async function openFromLibrary(rel, li) {
   document.querySelectorAll(".paperlist li").forEach((x) => x.classList.remove("active"));
@@ -499,6 +648,7 @@ function ensureLayout(i) {
         para: s.para,
         size: s.size,
         heading: s.heading,
+        eqno: s.eqno || null,  // equation number "(1)" printed beside a display equation
         rects: lineRects(s.words.map((wi) => L.words[wi]), !s.equation),  // in points
         // A sentence that wraps to the next page carries that page's word boxes too, so the
         // highlight can span both pages.
@@ -606,6 +756,7 @@ async function translateAll(force) {
   if (!S.aiConfig || !S.aiConfig.backend) return;
   if (!S.docId || !$("autotr").checked) return;
   const token = ++S.trToken;
+  const targetLanguage = lang();
   S.rateLimited = null; hide($("ai-banner"));
   const queue = [];   // pending {page, batch} tasks, in document order
   let produced = false;
@@ -632,7 +783,7 @@ async function translateAll(force) {
       }
       const t = queue.shift();
       if (S.rateLimited === token) { fillSource(t.page, t.batch, token); continue; }  // no more requests
-      await translateBatch(t.page, t.batch, force, token);
+      await translateBatch(t.page, t.batch, force, token, targetLanguage);
     }
   }
   await Promise.all(Array.from({ length: trPool() }, worker));
@@ -744,10 +895,10 @@ function buildTrShells() {
 
 // Stream a translation for one batch of segment texts, calling write(pageGlobalIndex, text) for
 // each result. The server numbers results from 0 within the batch, so we add the batch's start.
-async function streamTranslate(page, offset, texts, force, write) {
+async function streamTranslate(page, offset, texts, force, write, targetLanguage) {
   const res = await fetch("/api/translate_stream", {
     method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ doc_id: S.docId, page, target_lang: lang(), segments: texts, force: !!force }),
+    body: JSON.stringify({ doc_id: S.docId, page, target_lang: targetLanguage, segments: texts, force: !!force }),
   });
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
@@ -846,8 +997,15 @@ function preparePage(i) {
       para.appendChild(document.createElement("br"));
     }
     const sp = makeTrSeg(i, k, "");
+    if (seg.eqno) sp.dataset.eqno = seg.eqno;
     if (isBullet) sp.classList.add("trbullet");
     para.appendChild(sp);
+    if (seg.eqno) {
+      // Shown beside the translated equation until the image-read LaTeX takes it as \tag.
+      const no = document.createElement("span");
+      no.className = "treqno"; no.textContent = "(" + seg.eqno + ")";
+      para.appendChild(no);
+    }
     para.appendChild(document.createTextNode(" "));
     P.spanByK[k] = sp;
   });
@@ -872,11 +1030,11 @@ function fillSource(page, b, token) {
   paintFrontier();
 }
 
-async function translateBatch(page, b, force, token) {
+async function translateBatch(page, b, force, token, targetLanguage) {
   const P = S.pages[page];
   if (!P) return;
   const end = b.start + b.texts.length;
-  // A retranslate (lang/model change) bumps S.trToken and nulls P.trBuf; guard every buffer touch
+  // A retranslate bumps S.trToken and nulls P.trBuf; guard every buffer touch
   // so a lingering old-run worker can't throw on a null buffer or paint stale text into a new run.
   const live = () => token === S.trToken && P.trBuf;
   const write = (k, tr) => { if (!live()) return; P.trBuf[k] = tr; paintFrontier(); };
@@ -887,7 +1045,7 @@ async function translateBatch(page, b, force, token) {
   for (let attempt = 0; attempt < 3; attempt++) {
     if (!live() || S.rateLimited === token) break;
     try {
-      await streamTranslate(page, b.start, b.texts, force || attempt > 0, write);
+      await streamTranslate(page, b.start, b.texts, force || attempt > 0, write, targetLanguage);
     } catch (err) {
       if (err instanceof RateLimited) { S.rateLimited = token; showRateLimit(); break; }
     }
@@ -911,7 +1069,16 @@ async function fetchMath(i, wrap) {
     if (!d.equations || !d.equations.length) return;
     for (const eq of d.equations) {
       const sp = wrap.querySelector(`.trseg[data-i="${eq.i}"]`);
-      if (sp && eq.latex) sp.textContent = "\\[ " + eq.latex + " \\]";
+      if (!sp || !eq.latex) continue;
+      // Keep the translation's own math if KaTeX cannot render the image-read LaTeX.
+      if (window.katex) {
+        try { window.katex.renderToString(eq.latex, { displayMode: true, throwOnError: true }); }
+        catch { continue; }
+      }
+      const tag = sp.dataset && sp.dataset.eqno ? " \\tag{" + sp.dataset.eqno + "}" : "";
+      sp.textContent = "\\[ " + eq.latex + tag + " \\]";
+      const no = sp.nextElementSibling;
+      if (tag && no && no.classList.contains("treqno")) no.remove();
     }
     renderMath(wrap);
   } catch { /* best-effort: keep the original text if math fetch fails */ }
@@ -1101,9 +1268,8 @@ function scrollTrTo(t, mid) {
   list.scrollTo({ top: Math.max(0, Math.min(max, list.scrollTop + (tb.top - y) / trScale)), behavior: "instant" });
 }
 
-// Auto-translate toggle / lang / model changes -> re-run the whole-document translation
+// Auto-translate toggle and explicit retranslation. Settings changes reload the page.
 $("autotr").addEventListener("change", () => { if ($("autotr").checked) translateAll(); });
-$("lang").addEventListener("change", () => retranslateAll());
 $("retranslate").addEventListener("click", () => retranslateAll(true));
 
 // Translation panel text-size control (dynamic, persisted)
@@ -1209,7 +1375,7 @@ async function loadAnatomy(force) {
   const box = $("anatomy");
   box.innerHTML = '<p class="loading" style="padding:6px">Analyzing structure… (grounded in the source, ~10-30s)</p>';
   try {
-    const d = await postJSON("/api/anatomy", { doc_id: S.docId, force: !!force });
+    const d = await postJSON("/api/anatomy", { output_language: lang(), doc_id: S.docId, force: !!force });
     renderAnatomy(d); S.anatomyLoaded = true;
   } catch (err) {
     box.innerHTML = '<p class="loading" style="padding:6px">Error: ' + err.message + "</p>";
@@ -1297,7 +1463,7 @@ async function genSummary() {
   S.summaryLoaded = true;
   $("summary").innerHTML = '<p class="loading">Summarizing… (first run can take a bit)</p>';
   try {
-    const r = await postJSON("/api/summarize", { doc_id: S.docId });
+    const r = await postJSON("/api/summarize", { output_language: lang(), doc_id: S.docId });
     $("summary").innerHTML = mdMath(r.summary);
     renderMath($("summary"));
   } catch (err) {
@@ -1324,7 +1490,7 @@ $("export-review").addEventListener("click", async () => {
   const btn = $("export-review"), label = btn.textContent;
   btn.disabled = true; btn.textContent = "생성 중…";
   try {
-    const res = await fetch(`/api/review/${S.docId}`, { method: "POST" });
+    const res = await fetch(`/api/review/${S.docId}?output_language=${encodeURIComponent(lang())}`, { method: "POST" });
     if (!res.ok) {
       const d = await res.json().catch(() => ({}));
       if (d.rate_limited) showRateLimit();
@@ -1407,7 +1573,7 @@ $("chatform").addEventListener("submit", async (e) => {
     ? `논문의 다음 부분에 대한 질문입니다:\n"${cite}"\n\n${q || "이 부분을 설명해줘."}`
     : q;
   try {
-    const r = await postJSON("/api/chat", { doc_id: S.docId, question });
+    const r = await postJSON("/api/chat", { output_language: lang(), doc_id: S.docId, question });
     bot.innerHTML = mdMath(r.answer);
     renderMath(bot);
   } catch (err) { bot.textContent = "Error: " + err.message; }
@@ -1635,4 +1801,4 @@ let resizeT;
 window.addEventListener("resize", () => { clearTimeout(resizeT); resizeT = setTimeout(refitPdf, 300); });
 
 window.S = S; // expose for debugging
-loadConfig().finally(loadLibrary);
+loadConfig().finally(() => setLibSource(libSource));

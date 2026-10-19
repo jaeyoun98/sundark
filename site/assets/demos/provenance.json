@@ -1,0 +1,197 @@
+{
+  "schema_version": 2,
+  "recorded_date": "2026-10-15",
+  "application": "Sundark",
+  "application_source_commit": "9e9eaf82a03920c48bcc13e1c9644cbb7343fdca",
+  "application_source_modified_for_recording": false,
+  "capture_surface": "Actual desktop Chrome browser running the local Sundark app; not a physical mobile device",
+  "paper": {
+    "title": "Attention Is All You Need",
+    "source": "https://arxiv.org/pdf/1706.03762",
+    "reference": "https://arxiv.org/abs/1706.03762",
+    "sha256": "bdfaa68d8984f0dc02beaca527b76f207d99b666d31d1da728ee0728182df697",
+    "pages": 15
+  },
+  "capture": "Supported browser-tool Chrome CDP capability: Page.startScreencast for translation and chat submission; timestamped Page.captureScreenshot sampling for Anatomy and completed-answer reading. All accepted source frames are 1600x1000.",
+  "editing": "Genuine timestamped browser frames are assembled into unzoomed 30 fps H.264 inputs. Remotion 4.0.535 renders a spring-settled paper stage, eased camera, paired close-up crops of the same native capture, a language-neutral connector and return to the wide app. No application DOM, AI answer or native highlight is replaced.",
+  "captions": "Separate Korean and English WebVTT benefit captions. No localized editorial captions are burned into the base video; the small Sundark brand mark is rendered. Native Korean app text remains part of the real capture.",
+  "anatomy_preparation": {
+    "initial_attempts": "Default-effort preparation attempts reached the unchanged 300-second app timeout.",
+    "supported_environment": {
+      "CLAUDE_CODE_MAX_OUTPUT_TOKENS": "8192",
+      "CLAUDE_CODE_EFFORT_LEVEL": "low"
+    },
+    "settings_documentation": "https://code.claude.com/docs/en/env-vars",
+    "effective_request_metadata_verified": true,
+    "effective_max_output_tokens": 8192,
+    "effective_effort": "low",
+    "tools_enabled": false,
+    "completion": "The normal app JSON-repair fallback returned a complete parseable Anatomy; the normal quote verifier matched the filmed claim quotation against the paper.",
+    "scope": "Preparation runtime only. Application source, prompts, disabled tools, timeout and user global settings were unchanged."
+  },
+  "clips": [
+    {
+      "id": "translation",
+      "video": {
+        "file": "translation.mp4",
+        "bytes": 3077273,
+        "sha256": "b1a5e3c35b35a0d66b9351a2df26cb9333758edf1b99e597cad38304ecd1aa4c"
+      },
+      "poster": {
+        "file": "translation.jpg",
+        "bytes": 224125,
+        "sha256": "c9b313f54c28068cc93e7f5d93407a054b1d7e33f44f4c9b6e56ff3c70860fff"
+      },
+      "duration_seconds": 18.0,
+      "width": 1600,
+      "height": 1000,
+      "video_codec": "h264",
+      "frame_rate": "30/1",
+      "audio_streams": 0,
+      "captions": [
+        {
+          "language": "ko",
+          "file": "translation.ko.vtt",
+          "bytes": 283,
+          "sha256": "4d0a5f5ee2ef8aeb09f851cff708b36434d60c6f44e136143ed0aca9b5f850e0"
+        },
+        {
+          "language": "en",
+          "file": "translation.en.vtt",
+          "bytes": 250,
+          "sha256": "607efcf3bd1c3f5ae12682dd1981c4c2c9872a60cab2a6402b5e5ae09c4d74d5"
+        }
+      ],
+      "backend": "claude",
+      "model_requested": "sonnet",
+      "edits": "The native Transformer sentence selection is retained through 4.243 seconds; the actual selected frame is held afterward for reading. Remotion pairs enlarged original and translated passages from 6 to 13.8 seconds, then returns to the wide app. Actual generated results were prepared before filming.",
+      "editorial_captions_burned_in": false,
+      "brand_mark_burned_in": true,
+      "render_engine": "Remotion 4.0.535",
+      "source_input": {
+        "clip": "translation",
+        "file": "source-translation.mp4",
+        "bytes": 1003679,
+        "sha256": "180811d9256fdde83f544750be581a2b64db62a09fe097ef679ac7291ffd1913",
+        "url": "https://github.com/jmy-org/sundark/releases/download/landing-media-2026-10-15-v1/source-translation.mp4"
+      },
+      "frame_verification": "Remotion stills and decoded MP4 sample frames visually inspected; no claim of browser playback or physical-device proof."
+    },
+    {
+      "id": "anatomy",
+      "video": {
+        "file": "anatomy.mp4",
+        "bytes": 2801822,
+        "sha256": "c99da00c4e0671bbf2c220a91fd3cf365921eee2e91396de16dbc1d85a561bc6"
+      },
+      "poster": {
+        "file": "anatomy.jpg",
+        "bytes": 206648,
+        "sha256": "9c2b7704367e667f9ad514c0f98e56ece693fbc6a37d78480df05225055b7982"
+      },
+      "duration_seconds": 18.0,
+      "width": 1600,
+      "height": 1000,
+      "video_codec": "h264",
+      "frame_rate": "30/1",
+      "audio_streams": 0,
+      "captions": [
+        {
+          "language": "ko",
+          "file": "anatomy.ko.vtt",
+          "bytes": 264,
+          "sha256": "1e402f83b8d48b9540b75c22daae355a28e2376482e39f983acfc83059ec0c2b"
+        },
+        {
+          "language": "en",
+          "file": "anatomy.en.vtt",
+          "bytes": 243,
+          "sha256": "bbee0ce87e0139f21831865b5cb87b3bb09d43fd9bdccc7256b785dbe6aa1da8"
+        }
+      ],
+      "backend": "claude",
+      "model_requested": "claude-haiku-5-5",
+      "edits": "The real verified Main Claim quotation click, native source scroll and native source highlight are retained. Remotion pairs enlarged claim and matching source passages from 6 to 13.8 seconds, then returns to the wide app. Actual generated results were prepared before filming.",
+      "editorial_captions_burned_in": false,
+      "brand_mark_burned_in": true,
+      "render_engine": "Remotion 4.0.535",
+      "source_input": {
+        "clip": "anatomy",
+        "file": "source-anatomy.mp4",
+        "bytes": 914191,
+        "sha256": "d1f24f84819284ad51751e445dedf8336becd522a2e6545be4e2f16fc97fa807",
+        "url": "https://github.com/jmy-org/sundark/releases/download/landing-media-2026-10-15-v1/source-anatomy.mp4"
+      },
+      "frame_verification": "Remotion stills and decoded MP4 sample frames visually inspected; no claim of browser playback or physical-device proof."
+    },
+    {
+      "id": "chat",
+      "video": {
+        "file": "chat.mp4",
+        "bytes": 2093274,
+        "sha256": "8eed0754f1d23c8dd20f53cf4cac8cbb37dc28dd4794cb46443c20a20e475153"
+      },
+      "poster": {
+        "file": "chat.jpg",
+        "bytes": 158307,
+        "sha256": "13e56321a8336471f647a2b0324cb6852dcfafbb65ffe3eae4b2368a3f98bd33"
+      },
+      "duration_seconds": 22.5,
+      "width": 1600,
+      "height": 1000,
+      "video_codec": "h264",
+      "frame_rate": "30/1",
+      "audio_streams": 0,
+      "captions": [
+        {
+          "language": "ko",
+          "file": "chat.ko.vtt",
+          "bytes": 293,
+          "sha256": "daf7b4745d9aa909dfa3d49bb30dbd131a198b928859621c09d8c37d8d421721"
+        },
+        {
+          "language": "en",
+          "file": "chat.en.vtt",
+          "bytes": 272,
+          "sha256": "64d81b1c0e765fa1d9f7cead2c3dbbab45be25277fbeea6403d78ed7fad8bcfd"
+        }
+      ],
+      "backend": "claude",
+      "model_requested": "sonnet",
+      "edits": "The real question submission is retained, followed by the original cut at 3.5 seconds to reading its unchanged generated answer beside paper page 4. The actual wait is removed and the PDF was repositioned between shots. Remotion pairs enlarged paper equation and genuine answer from 7.4 to 18.1 seconds, then returns to context. This does not claim real-time generation latency.",
+      "editorial_captions_burned_in": false,
+      "brand_mark_burned_in": true,
+      "render_engine": "Remotion 4.0.535",
+      "source_input": {
+        "clip": "chat",
+        "file": "source-chat.mp4",
+        "bytes": 1061642,
+        "sha256": "44150217666ab974ee8a3ca63d4f5350272cfe6a765ab8cea51633a6050342c3",
+        "url": "https://github.com/jmy-org/sundark/releases/download/landing-media-2026-10-15-v1/source-chat.mp4"
+      },
+      "frame_verification": "Remotion stills and decoded MP4 sample frames visually inspected; no claim of browser playback or physical-device proof."
+    }
+  ],
+  "transcript": {
+    "file": "transcripts.md",
+    "bytes": 3847,
+    "sha256": "c28292afecfbaa4b1ee9c782d2ab32ff9e128ba72b65ac6a93651436c181d611"
+  },
+  "rendering": {
+    "engine": "Remotion",
+    "version": "4.0.535",
+    "authoring_project": "tools/landing-video",
+    "runtime_isolation": "Authoring-only React and Remotion dependencies; exported native MP4s, no website Remotion runtime",
+    "codec": "h264",
+    "crf": 26,
+    "pixel_format": "yuv420p",
+    "fps": 30,
+    "concurrency": 2,
+    "audio": false,
+    "faststart": true,
+    "source_inputs_manifest": "tools/landing-video/input-manifest.json",
+    "capture_audit_manifest": "tools/landing-video/capture-manifest.json",
+    "localized_editorial_captions_burned_in": false,
+    "brand_mark_burned_in": "Sundark"
+  }
+}

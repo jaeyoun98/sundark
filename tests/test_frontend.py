@@ -24,6 +24,9 @@ class FrontendTests(unittest.TestCase):
     def test_rate_limit_drains_queued_batches_with_source(self):
         self.node("tests/frontend_ratelimit_queue.test.js")
 
+    def test_output_language_settings_and_run_snapshot(self):
+        self.node("tests/frontend_output_language.test.js")
+
     def test_markdown_keeps_latex_for_katex(self):
         self.node("tests/frontend_markdown_math.test.js")
 
@@ -39,3 +42,12 @@ class FrontendTests(unittest.TestCase):
         versions = set(re.findall(r"KaTeX/([\d.]+)/", html))
         self.assertEqual(len(versions), 1, versions)
         self.assertIn(f"KaTeX/{versions.pop()}/contrib/copy-tex.min.js", html)
+
+    def test_unrenderable_math_is_not_swapped_in(self):
+        self.node("tests/frontend_math_guard.test.js")
+
+    def test_zotero_collections_are_listed_as_a_tree(self):
+        self.node("tests/frontend_zotero.test.js")
+
+    def test_zotero_list_ignores_stale_replies_and_pages_by_next(self):
+        self.node("tests/frontend_zotero_list.test.js")

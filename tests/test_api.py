@@ -115,6 +115,84 @@ class ApiTests(unittest.TestCase):
         )  # chat=opus override, everything else sonnet
         self.assertEqual(settings.load()["backend"], "claude")
 
+    def test_chatgpt_language_save_requires_validation_for_current_account(self):
+        settings.save("chatgpt", {}, 8, "Korean")
+        payload = {"backend": "chatgpt", "output_language": "Japanese"}
+        with (
+            patch(
+                "app.main.chatgpt_auth.validation_identity",
+                return_value="account-a:0:0",
+            ),
+            patch("app.main.ai.probe", new=AsyncMock()) as probe,
+        ):
+            self.assertEqual(
+                self.client.post("/api/settings", json=payload).status_code, 200
+            )
+            self.assertEqual(probe.await_count, 2)
+            self.assertEqual(
+                settings.load()["validated_chatgpt_identity"], "account-a:0:0"
+            )
+            probe.reset_mock()
+            payload["output_language"] = "French"
+            self.assertEqual(
+                self.client.post("/api/settings", json=payload).status_code, 200
+            )
+            probe.assert_not_awaited()
+
+        # Selecting or connecting another account changes the active identity,
+        # even when its selected model strings remain identical.
+        with (
+            patch(
+                "app.main.chatgpt_auth.validation_identity",
+                return_value="account-b:1:0",
+            ),
+            patch(
+                "app.main.ai.probe",
+                new=AsyncMock(side_effect=ModelUnavailableError("Unavailable")),
+            ) as probe,
+        ):
+            for language in ("French", "German"):
+                payload["output_language"] = language
+                self.assertEqual(
+                    self.client.post("/api/settings", json=payload).status_code, 400
+                )
+            self.assertEqual(probe.await_count, 2)
+        self.assertEqual(settings.load()["output_language"], "French")
+        self.assertEqual(settings.load()["validated_chatgpt_identity"], "account-a:0:0")
+
+    def test_chatgpt_reconnect_invalidates_model_validation(self):
+        settings.save("chatgpt", {}, 8, validated_chatgpt_identity="account-a:0:0")
+        with (
+            patch(
+                "app.main.chatgpt_auth.validation_identity",
+                return_value="account-a:0:1",
+            ),
+            patch("app.main.ai.probe", new=AsyncMock()) as probe,
+        ):
+            response = self.client.post(
+                "/api/settings",
+                json={"backend": "chatgpt", "output_language": "English"},
+            )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(probe.await_count, 2)
+        self.assertEqual(settings.load()["validated_chatgpt_identity"], "account-a:0:1")
+
+    def test_chatgpt_account_change_during_probe_cannot_save_validation(self):
+        before = settings.load()
+        with (
+            patch(
+                "app.main.chatgpt_auth.validation_identity",
+                side_effect=["account-a:0:0", "account-a:2:0"],
+            ),
+            patch("app.main.ai.probe", new=AsyncMock()),
+        ):
+            response = self.client.post(
+                "/api/settings",
+                json={"backend": "chatgpt", "output_language": "English"},
+            )
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(settings.load(), before)
+
     def test_cache_keys_differ_per_backend(self):
         with patch("app.main.ai.summarize", new=AsyncMock(return_value="S")):
             self.client.post("/api/summarize", json={"doc_id": "d"})
@@ -122,7 +200,11 @@ class ApiTests(unittest.TestCase):
             self.client.post("/api/summarize", json={"doc_id": "d"})
         names = sorted(p.name for p in (store.CACHE / "d").iterdir())
         self.assertEqual(
-            names, ["summary_claude-sonnet.json", "summary_hermes-gpt-6.1-sol.json"]
+            names,
+            [
+                "summary_Korean_claude-sonnet.json",
+                "summary_Korean_hermes-gpt-6.1-sol.json",
+            ],
         )
 
     def test_chat_history_survives_backend_switch(self):
@@ -205,3 +287,103 @@ class ApiTests(unittest.TestCase):
         ):
             self.client.get("/api/config")
         self.assertEqual(seen, ["off-loop"])
+
+    def test_untranslated_sentence_is_translated_again(self):
+        src = (
+            "where the probability that the system is in state i at n MCS is given by the "
+            "i th component of the vector, and A is the transition matrix."
+        )
+        half = (
+            "where the probability that the system is in state \\(i\\) at \\(n\\) MCS is given "
+            "by the \\(i\\)번째 성분 of the vector, and \\(A\\) is the 전이 행렬."
+        )
+        good = "여기서 \\(n\\) MCS에서 계가 상태 \\(i\\)에 있을 확률은 벡터의 \\(i\\)번째 성분이고, \\(A\\)는 전이 행렬이다."
+
+        async def stream(segs, lang, brief=""):
+            yield "첫 문장."
+            yield half
+
+        retranslate = AsyncMock(return_value=good)
+        with (
+            patch("app.main.ai.translate_stream", new=stream),
+            patch("app.main.ai.translate", new=retranslate),
+            patch("app.main._get_brief", new=AsyncMock(return_value="")),
+        ):
+            r = self.client.post(
+                "/api/translate_stream",
+                json={"doc_id": "d", "page": 0, "segments": ["First sentence.", src]},
+            )
+        lines = [json.loads(x) for x in r.text.splitlines()]
+        self.assertEqual(lines, [{"i": 0, "tr": "첫 문장."}, {"i": 1, "tr": good}])
+        retranslate.assert_awaited_once_with(src, "Korean")
+
+    def test_invalid_equation_transcription_is_dropped(self):
+        from app import ai
+
+        with patch(
+            "app.ai._run",
+            new=AsyncMock(
+                return_value="\\mathbf{x}_n = A\\mathbf{x}_{n-1},\\end{final"
+            ),
+        ):
+            import asyncio
+
+            self.assertEqual(asyncio.run(ai.equation_latex(b"PNG")), "")
+
+    def test_cached_repair_stops_after_first_rate_limit(self):
+        src = "where the probability that the system is in state i is given by the vector and A is the transition matrix."
+        cached = {"segments": [{"src": src, "tr": src} for _ in range(3)]}
+        with (
+            patch("app.main.store.cache_get", return_value=cached),
+            patch("app.main.store.cache_put") as put,
+            patch(
+                "app.main._retranslate",
+                new=AsyncMock(side_effect=RateLimitError("Slow down")),
+            ) as retry,
+        ):
+            response = self.client.post(
+                "/api/translate_stream",
+                json={"doc_id": "d", "page": 0, "segments": [src] * 3},
+            )
+        lines = [json.loads(x) for x in response.text.splitlines()]
+        self.assertEqual(lines, [{"error": "Slow down", "rate_limited": True}])
+        retry.assert_awaited_once()
+        put.assert_not_called()
+        self.assertTrue(all("checked" not in seg for seg in cached["segments"]))
+
+    def test_cached_untranslated_sentence_is_fixed_once(self):
+        src = (
+            "where the probability that the system is in state i at n MCS is given by the "
+            "i th component of the vector, and A is the transition matrix."
+        )
+        good = "여기서 계가 상태 \\(i\\)에 있을 확률은 벡터의 \\(i\\)번째 성분이고, \\(A\\)는 전이 행렬이다."
+        body = {"doc_id": "d", "page": 0, "segments": ["First sentence.", src]}
+        with patch("app.main._get_brief", new=AsyncMock(return_value="")):
+
+            async def stream(segs, lang, brief=""):
+                yield "첫 문장."
+                yield src  # left in English, and the retry fails too
+
+            with (
+                patch("app.main.ai.translate_stream", new=stream),
+                patch("app.main.ai.translate", new=AsyncMock(return_value=src)),
+            ):
+                self.client.post("/api/translate_stream", json=body)
+            with patch(
+                "app.main.ai.translate", new=AsyncMock(return_value=good)
+            ) as again:
+                first = [
+                    json.loads(x)
+                    for x in self.client.post(
+                        "/api/translate_stream", json=body
+                    ).text.splitlines()
+                ]
+                second = [
+                    json.loads(x)
+                    for x in self.client.post(
+                        "/api/translate_stream", json=body
+                    ).text.splitlines()
+                ]
+        self.assertEqual(first, [{"i": 0, "tr": "첫 문장."}, {"i": 1, "tr": good}])
+        self.assertEqual(second, first)
+        again.assert_awaited_once()  # the fix was written back to the cache
